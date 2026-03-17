@@ -923,6 +923,32 @@ def classify_event_type(call_module, call_function):
         return "unstake"
     return "other"
 
+def format_event_zh(call_module, call_function):
+    mod = str(call_module or "")
+    fun = str(call_function or "")
+    key = f"{mod}.{fun}"
+    m = mod.lower()
+    f = fun.lower()
+    mapping = {
+        "Balances.transfer": "转账",
+        "Balances.transfer_keep_alive": "转账（保活）",
+        "SubtensorModule.add_stake": "质押",
+        "SubtensorModule.add_stake_limit": "质押（限价）",
+        "SubtensorModule.remove_stake": "解押",
+        "SubtensorModule.remove_stake_limit": "解押（限价）",
+    }
+    if key in mapping:
+        return mapping[key]
+    if m == "subtensormodule":
+        if f.startswith("add_stake"):
+            return "质押"
+        if f.startswith("remove_stake"):
+            return "解押"
+    if m == "balances":
+        if f.startswith("transfer"):
+            return "转账"
+    return key
+
 def call_args_list_to_dict(call_args):
     if isinstance(call_args, dict):
         return call_args
@@ -999,7 +1025,7 @@ def start_chain_monitor(conn, session, token):
                         title,
                         f"时间：{now_cn_str()}",
                         f"地址：{signer}" + (f"（{remark}）" if remark else ""),
-                        f"事件：{call_module}.{call_function}",
+                        f"事件：{format_event_zh(call_module, call_function)}",
                     ]
                     if ev_type == "transfer":
                         dest = args_dict.get("dest") or args_dict.get("dest_addr") or args_dict.get("to")
