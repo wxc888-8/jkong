@@ -489,11 +489,29 @@ def tg_admin_handle_message(tg_session, bot_token, message):
 
     if cmd.startswith("/help"):
         payload = "\n".join([
-            "可用命令：",
+            "使用说明（私聊机器人）：",
+            "1) 先发 /whoami 拿到你的用户ID",
+            "2) 在服务器 .env 配置 TG_ADMIN_USER_IDS=你的ID（多个用逗号分隔）",
+            "3) 你就能用 /set 在线修改参数（写回 .env，热生效）",
+            "",
+            "命令：",
             "/whoami  获取你的用户ID",
-            "/show    查看当前参数",
+            "/show    查看当前参数（token 会打码）",
             "/get KEY 查看某个参数",
-            "/set KEY VALUE  设置参数（仅管理员，私聊）",
+            "/set KEY VALUE  修改参数（仅管理员、仅私聊）",
+            "",
+            "常用示例：",
+            "/set MIN_TAO_THRESHOLD 1.5",
+            "/set TG_MIN_INTERVAL_SECONDS 2",
+            "/set TELEGRAM_CHAT_ID -100xxx,-100yyy",
+            "/get MIN_TAO_THRESHOLD",
+            "",
+            "可修改参数 KEY：",
+            "MIN_TAO_THRESHOLD, HISTORY_LIMIT, TG_MIN_INTERVAL_SECONDS, TELEGRAM_CHAT_ID,",
+            "PRICE_REFRESH_SECONDS, HEARTBEAT_EVERY_BLOCKS, PROCESSED_HASHES_MAX, PROCESSED_HASHES_KEEP, SUBSTRATE_WSS_URL",
+            "",
+            "限制：",
+            "TELEGRAM_BOT_TOKEN 不允许私聊修改；SUBSTRATE_WSS_URL 改了通常需重启才会重连",
         ])
         tg_send_text(tg_session, bot_token, chat_id, payload)
         return
