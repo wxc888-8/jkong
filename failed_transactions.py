@@ -223,6 +223,20 @@ def short_hash(tx_hash, keep=10):
         return tx_hash
     return tx_hash[:2] + "..." + tx_hash[-keep:]
 
+def short_addr(addr, head=6, tail=6):
+    s = str(addr or "")
+    if len(s) <= head + tail + 2:
+        return s
+    return s[:head] + "..." + s[-tail:]
+
+def sanitize_md_code(s):
+    return str(s or "").replace("`", "'")
+
+def subnet_label(netuid_int):
+    if netuid_int is None:
+        return "全局（无子网netuid）"
+    return f"SN{netuid_int}"
+
 def get_alpha_price_map(session):
     url = "https://taostats.io/api/dtao/dtaoSubnets?limit=500&order=netuid_asc"
     try:
@@ -330,7 +344,7 @@ def tg_throttle(min_interval_seconds):
         time.sleep(mi - delta)
     _tg_last_sent_ts = time.time()
 
-def tg_send_text(session, bot_token, chat_id, text):
+def tg_send_text(session, bot_token, chat_id, text, parse_mode=None):
     if not text:
         return True
     if not session or not bot_token or not chat_id:
@@ -344,6 +358,8 @@ def tg_send_text(session, bot_token, chat_id, text):
         "text": safe_text,
         "disable_web_page_preview": True
     }
+    if parse_mode:
+        payload["parse_mode"] = str(parse_mode)
     try:
         resp = session.post(url, json=payload, timeout=15)
     except Exception as e:
@@ -364,13 +380,13 @@ def tg_send_text(session, bot_token, chat_id, text):
         return False
     return True
 
-def tg_send_text_multi(session, bot_token, chat_ids, text, min_interval_seconds):
+def tg_send_text_multi(session, bot_token, chat_ids, text, min_interval_seconds, parse_mode=None):
     if not chat_ids:
         return False
     ok = True
     for cid in chat_ids:
         tg_throttle(min_interval_seconds)
-        if not tg_send_text(session, bot_token, cid, text):
+        if not tg_send_text(session, bot_token, cid, text, parse_mode=parse_mode):
             ok = False
     return ok
 
@@ -987,16 +1003,19 @@ def monitor_realtime_failed(min_tao):
                     token, chat_ids = tg2
                     tg_min_interval = getenv_str("TG_MIN_INTERVAL_SECONDS", getenv_str("TELEGRAM_MIN_INTERVAL_SECONDS", "1"))
                     msg = "\n".join([
-                        "链上失败交易",
-                        f"时间：{ts_cn}（北京时间）",
-                        f"子网：{netuid_int if netuid_int is not None else 'Global'}",
-                        f"交易量：{vol_str}",
-                        f"钱包：{signer}",
-                        f"哈希：{tx_hash}",
-                        f"类型：{trade_side}",
-                        f"原因：{fail_reason}",
+                        "❌ *链上失败交易*",
+                        f"⏰ 时间：{sanitize_md_code(ts_cn)}（北京时间）",
+                        f"🌐 子网：{sanitize_md_code(subnet_label(netuid_int))}",
+                        f"💰 交易量：`{sanitize_md_code(vol_str)}`",
+                        f"👛 钱包：`{sanitize_md_code(short_addr(signer))}`",
+                        f"🔗 哈希：`{sanitize_md_code(short_hash(tx_hash))}`",
+                        f"⚙️ 类型：`{sanitize_md_code(trade_side)}`",
+                        f"🧾 原因：`{sanitize_md_code(fail_reason)}`",
+                        "",
+                        f"钱包(全)：`{sanitize_md_code(signer)}`",
+                        f"哈希(全)：`{sanitize_md_code(tx_hash)}`",
                     ])
-                    tg_send_text_multi(tg_session or get_telegram_session(), token, chat_ids, msg, tg_min_interval)
+                    tg_send_text_multi(tg_session or get_telegram_session(), token, chat_ids, msg, tg_min_interval, parse_mode="Markdown")
         except Exception as e:
             print(f"处理区块 {header.get('number')} 时发生错误: {e}")
             return None
@@ -1070,6 +1089,7 @@ def get_failed_transactions(session, limit=100, min_tao=50.0):
                 alpha_amount = tx.get('trade_alpha')
                 tao_equiv = tx.get('trade_tao_equiv')
                 netuid = tx.get('trade_netuid', 'Global')
+                netuid_int = netuid if isinstance(netuid, int) else None
                 trade_side = get_trade_side_zh(call_name)
                 tx_hash = tx.get('hash', '')
 
@@ -1087,15 +1107,18 @@ def get_failed_transactions(session, limit=100, min_tao=50.0):
                 if tg:
                     token, chat_ids = tg
                     msg = "\n".join([
-                        "历史失败交易",
-                        f"时间：{ts}（北京时间）",
-                        f"子网：{netuid}",
-                        f"交易量：{vol_str}",
-                        f"钱包：{ss58_signer}",
-                        f"哈希：{tx_hash}",
-                        f"类型：{trade_side}",
+                        "🕒 *历史失败交易*",
+                        f"⏰ 时间：{sanitize_md_code(ts)}（北京时间）",
+                        f"🌐 子网：{sanitize_md_code(subnet_label(netuid_int))}",
+                        f"💰 交易量：`{sanitize_md_code(vol_str)}`",
+                        f"👛 钱包：`{sanitize_md_code(short_addr(ss58_signer))}`",
+                        f"🔗 哈希：`{sanitize_md_code(short_hash(tx_hash))}`",
+                        f"⚙️ 类型：`{sanitize_md_code(trade_side)}`",
+                        "",
+                        f"钱包(全)：`{sanitize_md_code(ss58_signer)}`",
+                        f"哈希(全)：`{sanitize_md_code(tx_hash)}`",
                     ])
-                    tg_send_text_multi(tg_session, token, chat_ids, msg, tg_min_interval)
+                    tg_send_text_multi(tg_session, token, chat_ids, msg, tg_min_interval, parse_mode="Markdown")
         else:
             pass
 
