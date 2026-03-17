@@ -120,6 +120,7 @@ ERROR_NAME_ZH = {
     "NotEnoughBalanceToStake": "余额不足，无法质押",
     "NotEnoughBalanceToUnstake": "余额不足，无法解押",
     "NotEnoughBalanceToTransfer": "余额不足，无法转账",
+    "NotEnoughStakeToWithdraw": "解押数量超过当前质押",
     "NotRegistered": "未注册",
     "AlreadyRegistered": "已注册",
     "HotKeyAccountNotExists": "热钥账户不存在",
