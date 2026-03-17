@@ -1,0 +1,56 @@
+管理员私聊命令说明（Telegram）
+
+前提
+1) 机器人必须在运行（本地或 Docker 容器）
+2) 在服务器 .env 配置管理员ID：
+   TG_ADMIN_USER_IDS=123456789,987654321
+   多个管理员用逗号/分号分隔
+3) 管理命令只在“私聊机器人”里生效（群里发不会处理）
+
+命令列表
+1) /help
+   查看完整说明、示例与可修改参数清单
+
+2) /whoami
+   获取你的 Telegram 用户ID（用于配置 TG_ADMIN_USER_IDS）
+
+3) /show
+   查看当前参数（token 会打码）
+
+4) /get KEY
+   查看某个参数值
+   示例：
+   /get MIN_TAO_THRESHOLD
+   /get TELEGRAM_CHAT_ID
+
+5) /set KEY VALUE   （仅管理员、仅私聊）
+   修改参数，并写回服务器 .env（大多数参数会热生效）
+
+   常用示例：
+   /set MIN_TAO_THRESHOLD 1.5
+   /set TG_MIN_INTERVAL_SECONDS 2
+   /set HISTORY_LIMIT 20
+   /set TELEGRAM_CHAT_ID -100xxx,-100yyy
+   /set HEARTBEAT_EVERY_BLOCKS 0
+
+可通过 /set 修改的参数（KEY）
+- MIN_TAO_THRESHOLD                 失败交易推送阈值（TAO 等值 >= 才推送/打印）
+- HISTORY_LIMIT                      启动时回放历史失败交易条数
+- TG_MIN_INTERVAL_SECONDS            推送节流间隔（秒）
+- TELEGRAM_CHAT_ID                   推送目标群/频道ID（多个用逗号/分号）
+- PRICE_REFRESH_SECONDS              价格缓存刷新间隔（秒）
+- HEARTBEAT_EVERY_BLOCKS             心跳打印频率（0 表示关闭）
+- PROCESSED_HASHES_MAX               去重集合最大数量
+- PROCESSED_HASHES_KEEP              去重集合收缩后保留数量
+- SUBSTRATE_WSS_URL                  链节点WSS（改了通常需要重启才会重连生效）
+
+不允许通过 /set 修改的参数
+- TELEGRAM_BOT_TOKEN / TG_BOT_TOKEN  出于安全原因禁止私聊修改
+
+常见问题
+1) 私聊发 /set 提示“无权限”
+   检查 TG_ADMIN_USER_IDS 是否包含你的 user_id（用 /whoami 获取）
+
+2) 修改后没生效
+   - 确认是在私聊机器人发送
+   - SUBSTRATE_WSS_URL 修改通常需要重启容器/进程
