@@ -148,7 +148,7 @@ def get_session():
     })
     return session
 
-def tg_send_text(session, bot_token, chat_id, text):
+def tg_send_text(session, bot_token, chat_id, text, parse_mode=None):
     if not bot_token or chat_id is None:
         return False
     safe_text = "" if text is None else str(text)
@@ -160,6 +160,8 @@ def tg_send_text(session, bot_token, chat_id, text):
         "text": safe_text,
         "disable_web_page_preview": True
     }
+    if parse_mode:
+        payload["parse_mode"] = str(parse_mode)
     try:
         resp = session.post(url, json=payload, timeout=20)
         return resp.status_code == 200
@@ -466,6 +468,48 @@ def fmt_money(v):
     except Exception:
         return str(v)
 
+def fmt_num(v, digits=3):
+    try:
+        return f"{float(v):,.{int(digits)}f}"
+    except Exception:
+        return str(v)
+
+def short_addr(addr, head=4, tail=4):
+    s = str(addr or "")
+    if len(s) <= head + tail + 2:
+        return s
+    return s[:head] + ".." + s[-tail:]
+
+def taostats_account_url(addr):
+    a = str(addr or "").strip()
+    if not a:
+        return "https://taostats.io/"
+    return f"https://taostats.io/account/{a}"
+
+def build_address_report_markdown(address, free_tao, subnet_tao_items, tao_usd):
+    a_short = short_addr(address)
+    url = taostats_account_url(address)
+    lines = [
+        "💰 *地址信息*",
+        f"📍 `{a_short}` ([taostats]({url}))",
+        "",
+        "🌐 *子网代币*",
+    ]
+    if subnet_tao_items:
+        for netuid, tao_equiv in subnet_tao_items:
+            lines.append(f"🌠SN{netuid}:{fmt_num(tao_equiv, 3)} 𝞃")
+    else:
+        lines.append("（暂无子网持有或暂时获取不到价格）")
+
+    usd_part = ""
+    if tao_usd:
+        usd_part = f" (${fmt_num(free_tao * tao_usd, 2)})"
+    lines.extend([
+        "",
+        f"💰 💸 可用余额(free): {fmt_num(free_tao, 3)}𝞃{usd_part}",
+    ])
+    return "\n".join(lines)
+
 def extract_address_from_message(msg):
     if not isinstance(msg, dict):
         return None
@@ -717,14 +761,14 @@ def handle_command(conn, session, token, msg):
             tg_send_text(session, token, chat_id, "用法：回复一条包含地址的消息再发 /balance，或 /balance <地址>")
             return
         bal = get_system_balance_tao(addr)
-        tg_send_text(session, token, chat_id, "\n".join([
-            "💰 余额",
-            f"地址：{addr}",
-            f"free：{fmt_money(bal['free'])} TAO",
-            f"reserved：{fmt_money(bal['reserved'])} TAO",
-            f"misc_frozen：{fmt_money(bal['misc_frozen'])} TAO",
-            f"fee_frozen：{fmt_money(bal['fee_frozen'])} TAO",
-        ]))
+        usd = get_tao_price_usd(session)
+        msg_text = build_address_report_markdown(
+            addr,
+            bal["free"],
+            [],
+            usd,
+        )
+        tg_send_text(session, token, chat_id, msg_text, parse_mode="Markdown")
         return
 
     if cmd.startswith("/stakes") or cmd.startswith("/query"):
@@ -736,41 +780,27 @@ def handle_command(conn, session, token, msg):
         bal = get_system_balance_tao(addr)
         alpha_prices = get_alpha_price_map(session)
         alpha_by_netuid = get_coldkey_alpha_summary(addr)
-        items = []
-        total_tao_equiv = 0.0
-        for netuid, alpha_rao in alpha_by_netuid.items():
-            alpha = tao_from_rao(alpha_rao)
-            price = alpha_prices.get(int(netuid))
-            tao_equiv = (alpha * float(price)) if price is not None else None
-            if tao_equiv is not None:
-                total_tao_equiv += tao_equiv
-            items.append((netuid, alpha, tao_equiv))
-        items.sort(key=lambda x: (x[2] if x[2] is not None else -1.0), reverse=True)
-        top = items[:10]
         usd = get_tao_price_usd(session)
-        total_tao = bal["free"] + bal["reserved"] + total_tao_equiv
-        lines = []
-        if cmd.startswith("/query"):
-            lines.append("🔍 地址信息")
-        else:
-            lines.append("📊 子网持有（stake/alpha）")
-        lines.extend([
-            f"地址：{addr}",
-            f"余额 free：{fmt_money(bal['free'])} TAO",
-            f"余额 reserved：{fmt_money(bal['reserved'])} TAO",
-        ])
-        if top:
-            lines.append("子网Top10：netuid  alpha  ≈TAO")
-            for netuid, alpha, tao_equiv in top:
-                if tao_equiv is None:
-                    lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈N/A")
-                else:
-                    lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈{fmt_money(tao_equiv)} TAO")
-        lines.append(f"子网合计≈{fmt_money(total_tao_equiv)} TAO")
-        lines.append(f"总资产≈{fmt_money(total_tao)} TAO")
-        if usd:
-            lines.append(f"总资产≈{fmt_money(total_tao * usd)} USD")
-        tg_send_text(session, token, chat_id, "\n".join(lines))
+
+        subnet_items = []
+        for netuid, alpha_rao in alpha_by_netuid.items():
+            try:
+                n = int(netuid)
+            except Exception:
+                continue
+            price = alpha_prices.get(n)
+            if price is None:
+                continue
+            alpha = tao_from_rao(alpha_rao)
+            tao_equiv = alpha * float(price)
+            subnet_items.append((n, tao_equiv))
+        subnet_items.sort(key=lambda x: x[1], reverse=True)
+        subnet_items = subnet_items[:12]
+
+        msg_text = build_address_report_markdown(addr, bal["free"], subnet_items, usd)
+        if cmd.startswith("/stakes"):
+            msg_text = msg_text.replace("💰 *地址信息*", "📊 *子网代币*")
+        tg_send_text(session, token, chat_id, msg_text, parse_mode="Markdown")
         return
 
     if cmd.startswith("/holdall"):
