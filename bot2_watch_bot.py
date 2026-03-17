@@ -16,6 +16,10 @@ _dotenv_path = None
 _dotenv_cache = {}
 _dotenv_mtime = None
 _dotenv_lock = threading.Lock()
+_tao_price_cache = {"ts": 0.0, "usd": None}
+_alpha_price_cache = {"ts": 0.0, "map": {}}
+_substrate_lock = threading.Lock()
+_substrate = None
 
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -299,6 +303,9 @@ def get_limits(user_id):
     admins = parse_int_set(getenv_str("BOT2_TG_ADMIN_USER_IDS", ""))
     if int(user_id) in admins:
         return ("admin", 3001)
+    members = parse_int_set(getenv_str("BOT2_TG_MEMBER_USER_IDS", ""))
+    if int(user_id) in members:
+        return ("member", 3000)
     return ("free", 3)
 
 def cmd_help():
@@ -327,6 +334,137 @@ def cmd_contact():
     if s:
         return s
     return "请联系管理员。"
+
+def get_tao_price_usd(session):
+    now = time.time()
+    if now - float(_tao_price_cache.get("ts") or 0.0) < 20 and _tao_price_cache.get("usd") is not None:
+        return _tao_price_cache.get("usd")
+    url = "https://api.coingecko.com/api/v3/simple/price?ids=bittensor&vs_currencies=usd"
+    try:
+        resp = session.get(url, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        usd = None
+        if isinstance(data, dict):
+            usd = ((data.get("bittensor") or {}).get("usd")) if isinstance(data.get("bittensor"), dict) else None
+        usd_f = float(usd) if usd is not None else None
+        _tao_price_cache["ts"] = now
+        _tao_price_cache["usd"] = usd_f
+        return usd_f
+    except Exception:
+        return _tao_price_cache.get("usd")
+
+def get_alpha_price_map(session):
+    now = time.time()
+    if now - float(_alpha_price_cache.get("ts") or 0.0) < 60 and _alpha_price_cache.get("map"):
+        return _alpha_price_cache.get("map") or {}
+    url = "https://taostats.io/api/dtao/dtaoSubnets?limit=500&order=netuid_asc"
+    out = {}
+    try:
+        resp = session.get(url, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data.get("data", []) if isinstance(data, dict) else []
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                netuid = row.get("netuid")
+                price = row.get("price")
+                if netuid is None or price is None:
+                    continue
+                try:
+                    out[int(netuid)] = float(price)
+                except Exception:
+                    continue
+        _alpha_price_cache["ts"] = now
+        _alpha_price_cache["map"] = out
+        return out
+    except Exception:
+        return _alpha_price_cache.get("map") or {}
+
+def get_substrate():
+    global _substrate
+    wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
+    with _substrate_lock:
+        if _substrate is not None:
+            return _substrate
+        s = SubstrateInterface(url=wss_url)
+        s.init_runtime()
+        _substrate = s
+        return _substrate
+
+def tao_from_rao(v):
+    try:
+        return float(v) / 1_000_000_000
+    except Exception:
+        return 0.0
+
+def get_system_balance_tao(address):
+    s = get_substrate()
+    try:
+        acc = s.query("System", "Account", [address]).value
+        data = acc.get("data", {}) if isinstance(acc, dict) else {}
+        free = tao_from_rao(data.get("free", 0))
+        reserved = tao_from_rao(data.get("reserved", 0))
+        misc_frozen = tao_from_rao(data.get("misc_frozen", 0))
+        fee_frozen = tao_from_rao(data.get("fee_frozen", 0))
+        return {"free": free, "reserved": reserved, "misc_frozen": misc_frozen, "fee_frozen": fee_frozen}
+    except Exception:
+        return {"free": 0.0, "reserved": 0.0, "misc_frozen": 0.0, "fee_frozen": 0.0}
+
+def get_staking_hotkeys(coldkey):
+    s = get_substrate()
+    try:
+        v = s.query("SubtensorModule", "StakingHotkeys", [coldkey]).value
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+def get_hotkey_alpha_map(hotkey):
+    s = get_substrate()
+    out = {}
+    try:
+        it = s.query_map("SubtensorModule", "TotalHotkeyAlpha", [hotkey])
+        for k, v in it:
+            try:
+                netuid = int(k.value)
+            except Exception:
+                continue
+            out[netuid] = int(v.value) if v.value is not None else 0
+    except Exception:
+        return {}
+    return out
+
+def get_coldkey_alpha_summary(coldkey):
+    hotkeys = get_staking_hotkeys(coldkey)
+    totals = {}
+    for hk in hotkeys:
+        hk_map = get_hotkey_alpha_map(hk)
+        for netuid, alpha_rao in hk_map.items():
+            totals[netuid] = totals.get(netuid, 0) + int(alpha_rao or 0)
+    return totals
+
+def fmt_money(v):
+    try:
+        return f"{float(v):,.4f}"
+    except Exception:
+        return str(v)
+
+def extract_address_from_message(msg):
+    if not isinstance(msg, dict):
+        return None
+    txt = msg.get("text")
+    if isinstance(txt, str):
+        a = extract_address(txt)
+        if a:
+            return a
+    rep = msg.get("reply_to_message")
+    if isinstance(rep, dict):
+        t2 = rep.get("text")
+        if isinstance(t2, str):
+            return extract_address(t2)
+    return None
 
 def handle_command(conn, session, token, msg):
     chat = msg.get("chat", {}) if isinstance(msg.get("chat"), dict) else {}
@@ -535,6 +673,7 @@ def handle_command(conn, session, token, msg):
         tier, limit = get_limits(user_id)
         cnt = get_watch_count(conn, chat_id)
         events = get_events_setting(conn, chat_id)
+        price_usd = get_tao_price_usd(session)
         tg_send_text(session, token, chat_id, "\n".join([
             f"时间：{now_cn_str()}",
             f"聊天ID：{chat_id}",
@@ -542,11 +681,190 @@ def handle_command(conn, session, token, msg):
             f"等级：{tier}",
             f"地址数：{cnt}/{limit}",
             f"事件：{events}",
+            f"TAO/USD：{fmt_money(price_usd) if price_usd else 'N/A'}",
         ]))
         return
 
-    if cmd.startswith("/price") or cmd.startswith("/stakes") or cmd.startswith("/query") or cmd.startswith("/balance") or cmd.startswith("/hold") or cmd.startswith("/holdall") or cmd.startswith("/balances"):
-        tg_send_text(session, token, chat_id, "该命令暂未实现。")
+    if cmd.startswith("/price"):
+        usd = get_tao_price_usd(session)
+        if usd is None:
+            tg_send_text(session, token, chat_id, "暂时获取不到价格。")
+            return
+        tg_send_text(session, token, chat_id, f"TAO/USD：{fmt_money(usd)}\n时间：{now_cn_str()}")
+        return
+
+    if cmd.startswith("/balance"):
+        addr = extract_address_from_message(msg)
+        if not addr:
+            parts = cmd.split(None, 1)
+            addr = extract_address(parts[1]) if len(parts) == 2 else None
+        if not addr:
+            tg_send_text(session, token, chat_id, "用法：回复一条包含地址的消息再发 /balance，或 /balance <地址>")
+            return
+        bal = get_system_balance_tao(addr)
+        tg_send_text(session, token, chat_id, "\n".join([
+            "💰 余额",
+            f"地址：{addr}",
+            f"free：{fmt_money(bal['free'])} TAO",
+            f"reserved：{fmt_money(bal['reserved'])} TAO",
+            f"misc_frozen：{fmt_money(bal['misc_frozen'])} TAO",
+            f"fee_frozen：{fmt_money(bal['fee_frozen'])} TAO",
+        ]))
+        return
+
+    if cmd.startswith("/stakes") or cmd.startswith("/query"):
+        parts = cmd.split(None, 1)
+        addr = extract_address(parts[1]) if len(parts) == 2 else extract_address_from_message(msg)
+        if not addr:
+            tg_send_text(session, token, chat_id, "用法：/query <地址> 或 /stakes <地址>，也支持回复包含地址的消息。")
+            return
+        bal = get_system_balance_tao(addr)
+        alpha_prices = get_alpha_price_map(session)
+        alpha_by_netuid = get_coldkey_alpha_summary(addr)
+        items = []
+        total_tao_equiv = 0.0
+        for netuid, alpha_rao in alpha_by_netuid.items():
+            alpha = tao_from_rao(alpha_rao)
+            price = alpha_prices.get(int(netuid))
+            tao_equiv = (alpha * float(price)) if price is not None else None
+            if tao_equiv is not None:
+                total_tao_equiv += tao_equiv
+            items.append((netuid, alpha, tao_equiv))
+        items.sort(key=lambda x: (x[2] if x[2] is not None else -1.0), reverse=True)
+        top = items[:10]
+        usd = get_tao_price_usd(session)
+        total_tao = bal["free"] + bal["reserved"] + total_tao_equiv
+        lines = []
+        if cmd.startswith("/query"):
+            lines.append("🔍 地址信息")
+        else:
+            lines.append("📊 子网持有（stake/alpha）")
+        lines.extend([
+            f"地址：{addr}",
+            f"余额 free：{fmt_money(bal['free'])} TAO",
+            f"余额 reserved：{fmt_money(bal['reserved'])} TAO",
+        ])
+        if top:
+            lines.append("子网Top10：netuid  alpha  ≈TAO")
+            for netuid, alpha, tao_equiv in top:
+                if tao_equiv is None:
+                    lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈N/A")
+                else:
+                    lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈{fmt_money(tao_equiv)} TAO")
+        lines.append(f"子网合计≈{fmt_money(total_tao_equiv)} TAO")
+        lines.append(f"总资产≈{fmt_money(total_tao)} TAO")
+        if usd:
+            lines.append(f"总资产≈{fmt_money(total_tao * usd)} USD")
+        tg_send_text(session, token, chat_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/holdall"):
+        page_size = getenv_int("BOT2_PAGE_SIZE", 10)
+        rows = list_watches(conn, chat_id, 3001, 0)
+        if not rows:
+            tg_send_text(session, token, chat_id, "监听列表为空。用 /watch 添加。")
+            return
+        alpha_prices = get_alpha_price_map(session)
+        agg = {}
+        for addr, _, _ in rows:
+            alpha_by_netuid = get_coldkey_alpha_summary(addr)
+            for netuid, alpha_rao in alpha_by_netuid.items():
+                agg[netuid] = agg.get(netuid, 0) + int(alpha_rao or 0)
+        items = []
+        for netuid, alpha_rao in agg.items():
+            alpha = tao_from_rao(alpha_rao)
+            price = alpha_prices.get(int(netuid))
+            tao_equiv = (alpha * float(price)) if price is not None else None
+            items.append((netuid, alpha, tao_equiv))
+        items.sort(key=lambda x: (x[2] if x[2] is not None else -1.0), reverse=True)
+        top = items[:30]
+        lines = ["📌 各子网持有量汇总（当前聊天）", "netuid  alpha  ≈TAO"]
+        for netuid, alpha, tao_equiv in top:
+            if tao_equiv is None:
+                lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈N/A")
+            else:
+                lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈{fmt_money(tao_equiv)} TAO")
+        tg_send_text(session, token, chat_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/hold"):
+        parts = cmd.split(None, 1)
+        if len(parts) < 2:
+            tg_send_text(session, token, chat_id, "用法：/hold <子网ID>")
+            return
+        try:
+            netuid = int(parts[1].strip())
+        except Exception:
+            tg_send_text(session, token, chat_id, "子网ID格式不对。")
+            return
+        rows = list_watches(conn, chat_id, 3001, 0)
+        if not rows:
+            tg_send_text(session, token, chat_id, "监听列表为空。用 /watch 添加。")
+            return
+        alpha_prices = get_alpha_price_map(session)
+        price = alpha_prices.get(netuid)
+        ranking = []
+        for addr, remark, _ in rows:
+            alpha_by_netuid = get_coldkey_alpha_summary(addr)
+            alpha_rao = int(alpha_by_netuid.get(netuid, 0) or 0)
+            alpha = tao_from_rao(alpha_rao)
+            tao_equiv = (alpha * float(price)) if price is not None else None
+            ranking.append((addr, remark, alpha, tao_equiv))
+        ranking.sort(key=lambda x: (x[3] if x[3] is not None else x[2]), reverse=True)
+        top = ranking[:30]
+        lines = [f"📌 子网 {netuid} 持有量排行（当前聊天）", "地址  alpha  ≈TAO"]
+        for addr, remark, alpha, tao_equiv in top:
+            name = f"{addr}（{remark}）" if remark else addr
+            if tao_equiv is None:
+                lines.append(f"{name}\n  {fmt_money(alpha)} α  ≈N/A")
+            else:
+                lines.append(f"{name}\n  {fmt_money(alpha)} α  ≈{fmt_money(tao_equiv)} TAO")
+        tg_send_text(session, token, chat_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/balances"):
+        mode = "total"
+        parts = cmd.split(None, 1)
+        if len(parts) == 2:
+            mode = parts[1].strip().lower()
+        rows = list_watches(conn, chat_id, 3001, 0)
+        if not rows:
+            tg_send_text(session, token, chat_id, "监听列表为空。用 /watch 添加。")
+            return
+        alpha_prices = get_alpha_price_map(session)
+        usd = get_tao_price_usd(session)
+        sum_free = 0.0
+        sum_reserved = 0.0
+        sum_subnet = 0.0
+        for addr, _, _ in rows:
+            bal = get_system_balance_tao(addr)
+            sum_free += bal["free"]
+            sum_reserved += bal["reserved"]
+            if mode != "f":
+                alpha_by_netuid = get_coldkey_alpha_summary(addr)
+                for netuid, alpha_rao in alpha_by_netuid.items():
+                    price = alpha_prices.get(int(netuid))
+                    if price is None:
+                        continue
+                    sum_subnet += tao_from_rao(alpha_rao) * float(price)
+        if mode == "available":
+            total = sum_free
+        elif mode == "f":
+            total = sum_free
+        else:
+            total = sum_free + sum_reserved + sum_subnet
+        lines = [
+            "💰 资产汇总（当前聊天）",
+            f"模式：{mode}",
+            f"free：{fmt_money(sum_free)} TAO",
+            f"reserved：{fmt_money(sum_reserved)} TAO",
+        ]
+        if mode not in ("available", "f"):
+            lines.append(f"子网合计≈{fmt_money(sum_subnet)} TAO")
+        lines.append(f"总计≈{fmt_money(total)} TAO")
+        if usd:
+            lines.append(f"总计≈{fmt_money(total * usd)} USD")
+        tg_send_text(session, token, chat_id, "\n".join(lines))
         return
 
 def classify_event_type(call_module, call_function):
@@ -559,6 +877,36 @@ def classify_event_type(call_module, call_function):
     if m == "subtensormodule" and f.startswith("remove_stake"):
         return "unstake"
     return "other"
+
+def call_args_list_to_dict(call_args):
+    if isinstance(call_args, dict):
+        return call_args
+    if not isinstance(call_args, list):
+        return {}
+    out = {}
+    for item in call_args:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not name:
+            continue
+        out[name] = item.get("value")
+    return out
+
+def safe_int(v):
+    try:
+        return int(v)
+    except Exception:
+        try:
+            return int(float(v))
+        except Exception:
+            return None
+
+def fmt_tao_from_rao(v):
+    i = safe_int(v)
+    if i is None:
+        return None
+    return tao_from_rao(i)
 
 def start_chain_monitor(conn, session, token):
     wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
@@ -587,11 +935,15 @@ def start_chain_monitor(conn, session, token):
                     continue
                 call_module = call.get("call_module")
                 call_function = call.get("call_function")
+                call_args = call.get("call_args", [])
+                args_dict = call_args_list_to_dict(call_args)
                 ev_type = classify_event_type(call_module, call_function)
 
                 watchers = find_watches_by_address(conn, signer)
                 if not watchers:
                     continue
+                tao_usd = get_tao_price_usd(session)
+                alpha_prices = get_alpha_price_map(session)
                 for (chat_id, remark, _) in watchers:
                     wanted = get_events_setting(conn, chat_id)
                     if wanted != "all" and wanted != ev_type:
@@ -604,6 +956,28 @@ def start_chain_monitor(conn, session, token):
                         f"地址：{signer}" + (f"（{remark}）" if remark else ""),
                         f"事件：{call_module}.{call_function}",
                     ]
+                    if ev_type == "transfer":
+                        dest = args_dict.get("dest") or args_dict.get("dest_addr") or args_dict.get("to")
+                        tao_amt = fmt_tao_from_rao(args_dict.get("value") or args_dict.get("amount") or args_dict.get("balance"))
+                        if dest:
+                            lines.append(f"to：{dest}")
+                        if tao_amt is not None:
+                            lines.append(f"金额：{fmt_money(tao_amt)} TAO")
+                            if tao_usd:
+                                lines.append(f"≈{fmt_money(tao_amt * tao_usd)} USD")
+                    if ev_type in ("stake", "unstake"):
+                        netuid = safe_int(args_dict.get("netuid") or args_dict.get("originNetuid") or args_dict.get("origin_netuid"))
+                        raw_alpha = args_dict.get("amountStaked") or args_dict.get("amount_staked") or args_dict.get("amountUnstaked") or args_dict.get("amount_unstaked")
+                        alpha_amt = fmt_tao_from_rao(raw_alpha)
+                        if netuid is not None:
+                            lines.append(f"子网：{netuid}")
+                        if alpha_amt is not None:
+                            lines.append(f"数量：{fmt_money(alpha_amt)} α")
+                            if netuid is not None and netuid in alpha_prices:
+                                tao_equiv = alpha_amt * float(alpha_prices[netuid])
+                                lines.append(f"≈{fmt_money(tao_equiv)} TAO")
+                                if tao_usd:
+                                    lines.append(f"≈{fmt_money(tao_equiv * tao_usd)} USD")
                     if tx_hash:
                         lines.append(f"哈希：{tx_hash}")
                     tg_send_text(session, token, chat_id, "\n".join(lines))
