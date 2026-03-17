@@ -803,11 +803,10 @@ def handle_command(conn, session, token, msg):
             return
         lines = [f"📋 *监听列表* 第{md_code(page)}页（{md_code(cnt)}/{md_code(limit)} {tier}）"]
         for i, (addr, remark, created_at) in enumerate(rows, start=1 + offset):
-            ts = datetime.fromtimestamp(int(created_at), tz=timezone.utc).astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
             if remark:
-                lines.append(f"{md_code(i)}. {md_code(short_addr(addr))}  {md_code(remark)}")
+                lines.append(f"{md_code(i)}. {md_code(addr)}  {md_code(remark)}")
             else:
-                lines.append(f"{md_code(i)}. {md_code(short_addr(addr))}")
+                lines.append(f"{md_code(i)}. {md_code(addr)}")
         lines.append("")
         lines.append("提示：用 /list 2 翻页；用 /remark <地址> <备注> 修改备注。")
         send_md(session, token, chat_id, "\n".join(lines))
