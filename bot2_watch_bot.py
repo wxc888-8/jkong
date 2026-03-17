@@ -462,6 +462,19 @@ def get_system_balance_tao(address):
     except Exception:
         return {"free": 0.0, "reserved": 0.0, "misc_frozen": 0.0, "fee_frozen": 0.0}
 
+def get_system_balance_tao_maybe(address):
+    s = get_substrate()
+    try:
+        acc = s.query("System", "Account", [address]).value
+        data = acc.get("data", {}) if isinstance(acc, dict) else {}
+        free = tao_from_rao(data.get("free", 0))
+        reserved = tao_from_rao(data.get("reserved", 0))
+        misc_frozen = tao_from_rao(data.get("misc_frozen", 0))
+        fee_frozen = tao_from_rao(data.get("fee_frozen", 0))
+        return True, {"free": free, "reserved": reserved, "misc_frozen": misc_frozen, "fee_frozen": fee_frozen}
+    except Exception:
+        return False, None
+
 def get_staking_hotkeys(coldkey):
     s = get_substrate()
     try:
@@ -1094,7 +1107,7 @@ def get_address_netuid_tao_equiv(address, netuid, alpha_prices):
 
 def get_address_netuid_alpha_and_tao_equiv(address, netuid, alpha_prices):
     if netuid is None:
-        return (0.0, None, None)
+        return (None, None, None)
     try:
         alpha_by_netuid = get_coldkey_alpha_summary(address)
         alpha_rao = int(alpha_by_netuid.get(int(netuid), 0) or 0)
@@ -1105,7 +1118,7 @@ def get_address_netuid_alpha_and_tao_equiv(address, netuid, alpha_prices):
         tao_equiv = alpha * float(price)
         return (alpha, tao_equiv, float(price))
     except Exception:
-        return (0.0, None, None)
+        return (None, None, None)
 
 def call_args_list_to_dict(call_args):
     if isinstance(call_args, dict):
@@ -1190,7 +1203,7 @@ def start_chain_monitor(conn, session, token):
                     else:
                         lines = [f"{color}🖥️ {side} ({kind})"]
 
-                    lines.append(f"Account: 🌟{md_code(signer_short)} ([taostats]({account_url}))")
+                    lines.append(f"Account: 🌟{md_code(signer_short)} ( {md_code(account_url)} )")
                     if remark:
                         lines.append(f"📝 备注: {sanitize_md_code(remark)}")
                     if ev_type == "transfer":
@@ -1202,7 +1215,7 @@ def start_chain_monitor(conn, session, token):
                             usd_txt = f" (${fmt_num(tao_amt * tao_usd, 2)})" if tao_usd else ""
                             lines.append(f"{fmt_num(tao_amt, 6)}𝞃{usd_txt}")
                     if ev_type == "stake":
-                        raw_tao = args_dict.get("amountStaked") or args_dict.get("amount_staked") or args_dict.get("value") or args_dict.get("amount")
+                        raw_tao = args_dict.get("amountStaked") or args_dict.get("amount_staked")
                         tao_amt = fmt_tao_from_rao(raw_tao)
                         price_per_alpha = float(alpha_prices.get(netuid)) if (netuid is not None and netuid in alpha_prices) else None
                         if tao_amt is not None:
@@ -1234,14 +1247,17 @@ def start_chain_monitor(conn, session, token):
 
                     if netuid is not None:
                         holding_alpha, holding_tao_equiv, _ = get_address_netuid_alpha_and_tao_equiv(signer, netuid, alpha_prices)
-                        if holding_tao_equiv is not None:
+                        if holding_tao_equiv is not None and holding_alpha is not None:
                             usd_txt = f" (${fmt_num(holding_tao_equiv * tao_usd, 2)})" if tao_usd else ""
                             lines.append("")
                             lines.append(f"🌠SN{netuid}:💰剩余: {fmt_num(holding_tao_equiv, 3)} 𝞃{usd_txt}")
                             lines.append(f"Alpha: {fmt_num(holding_alpha, 2)} α")
 
-                    bal = get_system_balance_tao(signer)
-                    lines.append(f"💰 可用余额(free): {fmt_num(bal.get('free', 0.0), 6)}𝞃")
+                    ok_bal, bal = get_system_balance_tao_maybe(signer)
+                    if ok_bal and bal:
+                        lines.append(f"💰 可用余额(free): {fmt_num(bal.get('free', 0.0), 6)}𝞃")
+                    else:
+                        lines.append("💰 可用余额(free): N/A")
                     if tx_hash:
                         lines.append(f"Tx: {md_code(short_addr(tx_hash, 10, 10))}")
                         lines.append(f"Hash: {md_code(tx_hash)}")
