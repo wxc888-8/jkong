@@ -549,6 +549,7 @@ def build_address_report_markdown(address, free_tao, subnet_tao_items, tao_usd):
     lines = [
         f"💰 {md_bold('地址信息')}",
         f"📍 {md_code(a_short)} ([taostats]({url}))",
+        f"📌 地址：{md_code(address)}",
         "",
         f"🌐 {md_bold('子网代币')}",
     ]
@@ -1203,7 +1204,8 @@ def start_chain_monitor(conn, session, token):
                     else:
                         lines = [f"{color}🖥️ {side} ({kind})"]
 
-                    lines.append(f"Account: 🌟{md_code(signer_short)} ( {md_code(account_url)} )")
+                    lines.append(f"Account: 🌟{md_code(signer_short)} ([taostats]({account_url}))")
+                    lines.append(f"Address: {md_code(signer)}")
                     if remark:
                         lines.append(f"📝 备注: {sanitize_md_code(remark)}")
                     if ev_type == "transfer":
