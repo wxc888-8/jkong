@@ -5,630 +5,116 @@ import json
 import time
 import os
 import threading
-import queue
 from datetime import datetime, timezone, timedelta
 from substrateinterface import Keypair, SubstrateInterface
 
 # 用于记录已显示的交易哈希，防止重复打印
 processed_hashes = set()
+_tg_last_sent_ts = 0.0
+_dotenv_loaded = False
+_dotenv_path = None
+_dotenv_cache = {}
+_dotenv_mtime = None
+_dotenv_lock = threading.Lock()
 
-def _load_dotenv(path=".env"):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-    except Exception:
+def load_dotenv_file(dotenv_path):
+    return
+
+def load_dotenv_if_present():
+    global _dotenv_loaded
+    global _dotenv_path
+    if _dotenv_loaded:
         return
-    for line in lines:
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if s.startswith("export "):
-            s = s[7:].lstrip()
-        if "=" not in s:
-            continue
-        k, v = s.split("=", 1)
-        k = k.strip()
-        v = v.strip()
-        if not k or k in os.environ:
-            continue
-        if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
-            v = v[1:-1]
-        os.environ[k] = v
-
-_load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TG_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") or os.environ.get("TG_CHAT_ID")
-TELEGRAM_SEND_MODE = (os.environ.get("TELEGRAM_SEND_MODE") or os.environ.get("TG_SEND_MODE") or "batch").strip().lower()
-_tg_async_raw = (os.environ.get("TELEGRAM_ASYNC") or os.environ.get("TG_ASYNC") or "1").strip().lower()
-TELEGRAM_ASYNC = _tg_async_raw not in ("0", "false", "no", "off")
-_admin_raw = os.environ.get("TELEGRAM_ADMIN_USER_ID") or os.environ.get("TG_ADMIN_USER_ID") or ""
-TELEGRAM_ADMIN_USER_IDS = set()
-for _p in str(_admin_raw).replace(";", ",").split(","):
-    _p = _p.strip()
-    if not _p:
-        continue
     try:
-        TELEGRAM_ADMIN_USER_IDS.add(int(_p))
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        dotenv_path = os.path.join(base_dir, ".env")
     except Exception:
-        continue
-_tg_control_raw = os.environ.get("TELEGRAM_CONTROL_BOT") or os.environ.get("TG_CONTROL_BOT") or "1"
-MONITOR_CONFIG_PATH = os.environ.get("MONITOR_CONFIG_PATH") or "monitor_config.json"
-_tg_session = None
-_tg_queue = queue.Queue(maxsize=2000)
-_tg_worker_started = False
-_config_lock = threading.Lock()
-_config = None
+        dotenv_path = ".env"
+    _dotenv_path = dotenv_path
+    _dotenv_loaded = True
 
-def _normalize_bool(v, default):
-    if v is None:
-        return default
-    s = str(v).strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "false", "no", "off"):
-        return False
-    return default
+load_dotenv_if_present()
 
-TELEGRAM_CONTROL_BOT = _normalize_bool(_tg_control_raw, True)
-
-def _normalize_address(addr):
-    if not addr:
-        return None
-    if isinstance(addr, str) and addr.startswith("0x"):
-        return to_ss58(addr)
-    return str(addr).strip()
-
-def _parse_addresses(raw):
-    out = set()
-    if not raw:
+def parse_dotenv_dict(dotenv_path):
+    out = {}
+    if not dotenv_path:
         return out
-    for p in str(raw).replace(";", ",").split(","):
-        a = _normalize_address(p.strip())
-        if a:
-            out.add(a)
+    try:
+        with open(dotenv_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return out
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        key = k.strip()
+        if not key:
+            continue
+        val = v.strip()
+        if len(val) >= 2 and ((val[0] == val[-1] == '"') or (val[0] == val[-1] == "'")):
+            val = val[1:-1]
+        out[key] = val
     return out
 
-def _load_monitor_config():
-    defaults = {
-        "min_tao": float(os.environ.get("MONITOR_MIN_TAO") or 0.5),
-        "mode": (os.environ.get("MONITOR_MODE") or "all").strip().lower(),
-        "addresses": sorted(_parse_addresses(os.environ.get("MONITOR_ADDRESSES") or "")),
-        "push_enabled": _normalize_bool(os.environ.get("TELEGRAM_PUSH_ENABLED") or "1", True),
-    }
+def refresh_dotenv_cache_if_needed():
+    global _dotenv_mtime
+    global _dotenv_cache
+    load_dotenv_if_present()
+    if not _dotenv_path:
+        return
     try:
-        with open(MONITOR_CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            if isinstance(data.get("min_tao"), (int, float, str)):
-                try:
-                    defaults["min_tao"] = float(data.get("min_tao"))
-                except Exception:
-                    pass
-            if isinstance(data.get("mode"), str):
-                defaults["mode"] = data.get("mode").strip().lower()
-            if isinstance(data.get("addresses"), list):
-                defaults["addresses"] = sorted(_parse_addresses(",".join([str(x) for x in data.get("addresses") if x is not None])))
-            if "push_enabled" in data:
-                defaults["push_enabled"] = _normalize_bool(data.get("push_enabled"), defaults["push_enabled"])
+        mtime = os.path.getmtime(_dotenv_path)
     except Exception:
-        pass
-    if defaults["mode"] not in ("all", "addresses"):
-        defaults["mode"] = "all"
-    if defaults["min_tao"] < 0:
-        defaults["min_tao"] = 0.0
-    return defaults
+        return
+    if _dotenv_mtime == mtime:
+        return
+    with _dotenv_lock:
+        try:
+            mtime2 = os.path.getmtime(_dotenv_path)
+        except Exception:
+            return
+        if _dotenv_mtime == mtime2:
+            return
+        _dotenv_cache = parse_dotenv_dict(_dotenv_path)
+        _dotenv_mtime = mtime2
 
-def _save_monitor_config(cfg):
+def get_cfg_raw(name):
+    load_dotenv_if_present()
+    refresh_dotenv_cache_if_needed()
+    if name in _dotenv_cache:
+        return _dotenv_cache.get(name)
+    return os.getenv(name)
+
+def getenv_str(name, default=None):
+    v = get_cfg_raw(name)
+    if v is None:
+        return default
+    s = str(v).strip()
+    return s if s != "" else default
+
+def getenv_int(name, default):
+    s = getenv_str(name, None)
+    if s is None:
+        return default
     try:
-        with open(MONITOR_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return int(float(s))
     except Exception:
-        pass
+        return default
 
-def get_monitor_config():
-    global _config
-    with _config_lock:
-        if _config is None:
-            _config = _load_monitor_config()
-        return dict(_config)
-
-def update_monitor_config(patch):
-    global _config
-    with _config_lock:
-        if _config is None:
-            _config = _load_monitor_config()
-        for k, v in patch.items():
-            _config[k] = v
-        if _config.get("mode") not in ("all", "addresses"):
-            _config["mode"] = "all"
-        try:
-            _config["min_tao"] = float(_config.get("min_tao") or 0.0)
-        except Exception:
-            _config["min_tao"] = 0.0
-        if _config["min_tao"] < 0:
-            _config["min_tao"] = 0.0
-        if not isinstance(_config.get("addresses"), list):
-            _config["addresses"] = []
-        _config["addresses"] = sorted(_parse_addresses(",".join([str(x) for x in _config.get("addresses") if x is not None])))
-        _config["push_enabled"] = _normalize_bool(_config.get("push_enabled"), True)
-        _save_monitor_config(_config)
-        return dict(_config)
-
-def _get_tg_session():
-    global _tg_session
-    if _tg_session is None:
-        s = requests.Session()
-        s.headers.update({
-            "User-Agent": "tao-failed-monitor",
-            "Accept": "application/json",
-        })
-        _tg_session = s
-    return _tg_session
-
-def _safe_truncate(s, max_len):
-    if not isinstance(s, str):
-        s = str(s) if s is not None else ""
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 1] + "…"
-
-def format_failed_tx_message(ts_cn, netuid, tao_amount, alpha_amount, tao_equiv, signer, tx_hash, trade_side, fail_reason):
-    netuid_text = str(netuid) if netuid is not None else "Global"
-    if isinstance(tao_amount, float):
-        vol_text = f"{tao_amount:,.4f} TAO"
-    elif isinstance(alpha_amount, float) and isinstance(tao_equiv, float):
-        vol_text = f"{tao_equiv:,.4f} TAO（{alpha_amount:,.4f} α）"
-    elif isinstance(tao_equiv, float):
-        vol_text = f"{tao_equiv:,.4f} TAO"
-    else:
-        vol_text = "未知"
-    fail_reason = _safe_truncate(fail_reason, 600)
-    return "\n".join([
-        f"失败交易提醒",
-        f"时间：{ts_cn}（北京时间）",
-        f"子网：{netuid_text}",
-        f"交易量：{vol_text}",
-        f"钱包：{signer}",
-        f"类型：{trade_side}",
-        f"原因：{fail_reason}",
-        f"哈希：{tx_hash}",
-    ])
-
-def format_failed_tx_line(ts_cn, netuid, tao_amount, alpha_amount, tao_equiv, signer, tx_hash, trade_side, fail_reason):
-    netuid_text = str(netuid) if netuid is not None else "Global"
-    if isinstance(tao_amount, float):
-        vol_text = f"{tao_amount:,.4f} TAO"
-    elif isinstance(alpha_amount, float) and isinstance(tao_equiv, float):
-        vol_text = f"{tao_equiv:,.4f} TAO（{alpha_amount:,.4f} α）"
-    elif isinstance(tao_equiv, float):
-        vol_text = f"{tao_equiv:,.4f} TAO"
-    else:
-        vol_text = "未知"
-    signer = _safe_truncate(signer, 16)
-    tx_hash = _safe_truncate(tx_hash, 24)
-    fail_reason = _safe_truncate(fail_reason, 140)
-    return f"{ts_cn} 子网{netuid_text} {vol_text} {trade_side} {signer} {tx_hash} 原因：{fail_reason}"
-
-def _tg_worker_loop():
-    while True:
-        text = _tg_queue.get()
-        try:
-            send_telegram_message(text)
-        finally:
-            _tg_queue.task_done()
-
-def _ensure_tg_worker():
-    global _tg_worker_started
-    if _tg_worker_started:
-        return
-    if not TELEGRAM_ASYNC:
-        return
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    t = threading.Thread(target=_tg_worker_loop, daemon=True)
-    t.start()
-    _tg_worker_started = True
-
-def enqueue_telegram_message(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-    if TELEGRAM_ASYNC:
-        _ensure_tg_worker()
-        try:
-            _tg_queue.put_nowait(text)
-            return True
-        except Exception:
-            return False
-    return send_telegram_message(text)
-
-def send_telegram_message(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": _safe_truncate(text, 3800),
-        "disable_web_page_preview": True,
-    }
-    s = _get_tg_session()
-    for attempt in range(3):
-        try:
-            resp = s.post(url, json=payload, timeout=10)
-            if resp.status_code == 429:
-                try:
-                    data = resp.json()
-                    retry_after = int((data.get("parameters") or {}).get("retry_after") or 0)
-                except Exception:
-                    retry_after = 0
-                time.sleep(min(max(retry_after, 1), 30))
-                continue
-            if 500 <= resp.status_code < 600:
-                time.sleep(min(2 ** attempt, 8))
-                continue
-            resp.raise_for_status()
-            return True
-        except Exception:
-            time.sleep(min(2 ** attempt, 8))
-    return False
-
-def send_telegram_message_to(chat_id, text, reply_markup=None):
-    if not TELEGRAM_BOT_TOKEN or not chat_id:
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": _safe_truncate(text, 3800),
-        "disable_web_page_preview": True,
-    }
-    if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
-    s = _get_tg_session()
-    for attempt in range(3):
-        try:
-            resp = s.post(url, json=payload, timeout=10)
-            if resp.status_code == 429:
-                try:
-                    data = resp.json()
-                    retry_after = int((data.get("parameters") or {}).get("retry_after") or 0)
-                except Exception:
-                    retry_after = 0
-                time.sleep(min(max(retry_after, 1), 30))
-                continue
-            if 500 <= resp.status_code < 600:
-                time.sleep(min(2 ** attempt, 8))
-                continue
-            resp.raise_for_status()
-            return True
-        except Exception:
-            time.sleep(min(2 ** attempt, 8))
-    return False
-
-def edit_telegram_message(chat_id, message_id, text, reply_markup=None):
-    if not TELEGRAM_BOT_TOKEN or not chat_id or not message_id:
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText"
-    payload = {
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": _safe_truncate(text, 3800),
-        "disable_web_page_preview": True,
-    }
-    if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
-    s = _get_tg_session()
-    for attempt in range(3):
-        try:
-            resp = s.post(url, json=payload, timeout=10)
-            if resp.status_code == 429:
-                try:
-                    data = resp.json()
-                    retry_after = int((data.get("parameters") or {}).get("retry_after") or 0)
-                except Exception:
-                    retry_after = 0
-                time.sleep(min(max(retry_after, 1), 30))
-                continue
-            if 500 <= resp.status_code < 600:
-                time.sleep(min(2 ** attempt, 8))
-                continue
-            resp.raise_for_status()
-            return True
-        except Exception:
-            time.sleep(min(2 ** attempt, 8))
-    return False
-
-def answer_telegram_callback(callback_query_id, text=None, show_alert=False):
-    if not TELEGRAM_BOT_TOKEN or not callback_query_id:
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
-    payload = {
-        "callback_query_id": callback_query_id,
-        "show_alert": bool(show_alert),
-    }
-    if isinstance(text, str) and text.strip():
-        payload["text"] = _safe_truncate(text.strip(), 180)
-    s = _get_tg_session()
-    for attempt in range(3):
-        try:
-            resp = s.post(url, json=payload, timeout=10)
-            if resp.status_code == 429:
-                try:
-                    data = resp.json()
-                    retry_after = int((data.get("parameters") or {}).get("retry_after") or 0)
-                except Exception:
-                    retry_after = 0
-                time.sleep(min(max(retry_after, 1), 30))
-                continue
-            if 500 <= resp.status_code < 600:
-                time.sleep(min(2 ** attempt, 8))
-                continue
-            resp.raise_for_status()
-            return True
-        except Exception:
-            time.sleep(min(2 ** attempt, 8))
-    return False
-
-def _admin_help_text():
-    return "\n".join([
-        "可用命令：",
-        "/menu 打开按钮菜单",
-        "/status 查看当前配置",
-        "/min 0.5 设置阈值（TAO）",
-        "/mode all|addresses 设置监控模式（全部/仅地址）",
-        "/add <地址> 添加监控地址（可重复多次）",
-        "/del <地址> 删除监控地址",
-        "/list 列出监控地址",
-        "/push on|off 开关推送（终端仍打印）",
-        "/help 查看帮助",
-    ])
-
-def _format_status(cfg):
-    mode_text = "全部" if cfg.get("mode") == "all" else "仅指定地址"
-    push_text = "开" if cfg.get("push_enabled") else "关"
-    addrs = cfg.get("addresses") or []
-    lines = [
-        f"当前配置：",
-        f"阈值：{cfg.get('min_tao')} TAO",
-        f"模式：{mode_text}",
-        f"推送：{push_text}",
-        f"地址数：{len(addrs)}",
-    ]
-    if addrs:
-        lines.append("地址：")
-        lines.extend(addrs[:50])
-        if len(addrs) > 50:
-            lines.append(f"... 还有 {len(addrs) - 50} 个")
-    return "\n".join(lines)
-
-def _admin_menu_keyboard(cfg):
-    push_text = "推送：开" if cfg.get("push_enabled") else "推送：关"
-    mode_text = "模式：全部" if cfg.get("mode") == "all" else "模式：仅地址"
-    min_text = f"阈值：{cfg.get('min_tao')} TAO"
-    return {
-        "inline_keyboard": [
-            [{"text": "刷新状态", "callback_data": "menu:status"}],
-            [{"text": push_text, "callback_data": "menu:push"}, {"text": mode_text, "callback_data": "menu:mode"}],
-            [{"text": "阈值 -0.5", "callback_data": "menu:min:-0.5"}, {"text": min_text, "callback_data": "menu:status"}, {"text": "阈值 +0.5", "callback_data": "menu:min:+0.5"}],
-            [{"text": "阈值 -0.1", "callback_data": "menu:min:-0.1"}, {"text": "阈值 +0.1", "callback_data": "menu:min:+0.1"}],
-            [{"text": "地址列表", "callback_data": "menu:list"}, {"text": "帮助", "callback_data": "menu:help"}],
-        ]
-    }
-
-def _admin_menu_text(cfg):
-    return _format_status(cfg) + "\n\n发送 /add <地址> /del <地址> 管理地址。"
-
-def _handle_admin_callback(data):
-    d = (data or "").strip()
-    if not d.startswith("menu:"):
-        return None, None
-    action = d[5:]
-    if action == "status":
-        cfg = get_monitor_config()
-        return _admin_menu_text(cfg), cfg
-    if action == "help":
-        return _admin_help_text(), None
-    if action == "list":
-        cfg = get_monitor_config()
-        addrs = cfg.get("addresses") or []
-        if not addrs:
-            return "地址列表为空", None
-        return "\n".join(["地址列表："] + addrs[:120]), None
-    if action == "push":
-        cfg0 = get_monitor_config()
-        cfg = update_monitor_config({"push_enabled": not bool(cfg0.get("push_enabled"))})
-        return _admin_menu_text(cfg), cfg
-    if action == "mode":
-        cfg0 = get_monitor_config()
-        new_mode = "addresses" if (cfg0.get("mode") or "all") == "all" else "all"
-        cfg = update_monitor_config({"mode": new_mode})
-        return _admin_menu_text(cfg), cfg
-    if action.startswith("min:"):
-        delta_str = action[4:]
-        try:
-            delta = float(delta_str)
-        except Exception:
-            return "阈值调整失败", None
-        cfg0 = get_monitor_config()
-        cur = float(cfg0.get("min_tao") or 0.0)
-        cfg = update_monitor_config({"min_tao": max(cur + delta, 0.0)})
-        return _admin_menu_text(cfg), cfg
-    return None, None
-
-def _handle_admin_command(text):
-    t = (text or "").strip()
-    if not t:
-        return None
-    if t in ("/menu", "菜单"):
-        cfg = get_monitor_config()
-        return _admin_menu_text(cfg)
-    if t in ("/start", "/help", "help", "帮助"):
-        return _admin_help_text()
-    if t.startswith("/status") or t.startswith("状态"):
-        return _format_status(get_monitor_config())
-    if t.startswith("/min") or t.startswith("/threshold") or t.startswith("阈值"):
-        parts = t.replace("阈值", "").split()
-        if len(parts) >= 2:
-            val = parts[1]
-        elif len(parts) == 1 and t.startswith("阈值"):
-            val = parts[0].strip()
-        else:
-            return "用法：/min 0.5"
-        try:
-            f = float(val)
-        except Exception:
-            return "阈值格式不对，用法：/min 0.5"
-        cfg = update_monitor_config({"min_tao": max(f, 0.0)})
-        return f"已设置阈值为 {cfg.get('min_tao')} TAO"
-    if t.startswith("/mode") or t.startswith("模式"):
-        parts = t.replace("模式", "").split()
-        if len(parts) >= 2:
-            m = parts[1].strip().lower()
-        elif len(parts) == 1 and t.startswith("模式"):
-            m = parts[0].strip().lower()
-        else:
-            return "用法：/mode all 或 /mode addresses"
-        if m in ("all", "全部"):
-            m = "all"
-        if m in ("addresses", "addr", "address", "only", "仅地址", "指定", "指定地址"):
-            m = "addresses"
-        if m not in ("all", "addresses"):
-            return "模式只能是 all 或 addresses"
-        cfg = update_monitor_config({"mode": m})
-        return _format_status(cfg)
-    if t.startswith("/add") or t.startswith("添加"):
-        parts = t.split(maxsplit=1)
-        if len(parts) < 2:
-            return "用法：/add <地址>"
-        addr = _normalize_address(parts[1].strip())
-        if not addr:
-            return "地址为空"
-        cfg0 = get_monitor_config()
-        addrs = set(cfg0.get("addresses") or [])
-        addrs.add(addr)
-        cfg = update_monitor_config({"addresses": sorted(addrs)})
-        return f"已添加地址：{addr}\n地址数：{len(cfg.get('addresses') or [])}"
-    if t.startswith("/del") or t.startswith("删除"):
-        parts = t.split(maxsplit=1)
-        if len(parts) < 2:
-            return "用法：/del <地址>"
-        addr = _normalize_address(parts[1].strip())
-        if not addr:
-            return "地址为空"
-        cfg0 = get_monitor_config()
-        addrs = set(cfg0.get("addresses") or [])
-        if addr in addrs:
-            addrs.remove(addr)
-        cfg = update_monitor_config({"addresses": sorted(addrs)})
-        return f"已删除地址：{addr}\n地址数：{len(cfg.get('addresses') or [])}"
-    if t.startswith("/list") or t.startswith("列表"):
-        cfg = get_monitor_config()
-        addrs = cfg.get("addresses") or []
-        if not addrs:
-            return "地址列表为空"
-        return "\n".join(["地址列表："] + addrs[:100])
-    if t.startswith("/push") or t.startswith("推送"):
-        parts = t.split(maxsplit=1)
-        if len(parts) < 2:
-            return "用法：/push on 或 /push off"
-        v = parts[1].strip().lower()
-        if v in ("on", "1", "true", "开"):
-            cfg = update_monitor_config({"push_enabled": True})
-            return _format_status(cfg)
-        if v in ("off", "0", "false", "关"):
-            cfg = update_monitor_config({"push_enabled": False})
-            return _format_status(cfg)
-        return "用法：/push on 或 /push off"
-    return "未识别命令，发送 /help 查看用法"
-
-def _run_admin_polling():
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CONTROL_BOT:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    s = _get_tg_session()
-    offset = 0
-    while True:
-        try:
-            params = {
-                "timeout": 30,
-                "offset": offset,
-                "allowed_updates": json.dumps(["message", "callback_query"]),
-            }
-            resp = s.get(url, params=params, timeout=40)
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("result") if isinstance(data, dict) else None
-            if not isinstance(results, list):
-                time.sleep(2)
-                continue
-            for upd in results:
-                if not isinstance(upd, dict):
-                    continue
-                upd_id = upd.get("update_id")
-                if isinstance(upd_id, int) and upd_id >= offset:
-                    offset = upd_id + 1
-                cbq = upd.get("callback_query")
-                if isinstance(cbq, dict):
-                    cbq_id = cbq.get("id")
-                    frm = cbq.get("from") if isinstance(cbq.get("from"), dict) else {}
-                    user_id = frm.get("id")
-                    msg_obj = cbq.get("message") if isinstance(cbq.get("message"), dict) else {}
-                    chat = msg_obj.get("chat") if isinstance(msg_obj.get("chat"), dict) else {}
-                    chat_id = chat.get("id")
-                    message_id = msg_obj.get("message_id")
-                    data_str = cbq.get("data")
-                    if user_id not in TELEGRAM_ADMIN_USER_IDS:
-                        answer_telegram_callback(cbq_id, "无权限。", show_alert=False)
-                        continue
-                    out_text, cfg_for_kb = _handle_admin_callback(data_str)
-                    if out_text:
-                        if cfg_for_kb is not None:
-                            kb = _admin_menu_keyboard(cfg_for_kb)
-                            edit_telegram_message(chat_id, message_id, out_text, reply_markup=kb)
-                        else:
-                            send_telegram_message_to(chat_id, out_text)
-                        answer_telegram_callback(cbq_id, "已处理", show_alert=False)
-                    else:
-                        answer_telegram_callback(cbq_id, "无效操作", show_alert=False)
-                    continue
-                msg = upd.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                frm = msg.get("from") if isinstance(msg.get("from"), dict) else {}
-                user_id = frm.get("id")
-                chat = msg.get("chat") if isinstance(msg.get("chat"), dict) else {}
-                chat_id = chat.get("id")
-                text = msg.get("text")
-                if not isinstance(text, str):
-                    continue
-                t = text.strip()
-                if t in ("/whoami", "/id", "id", "我的id", "我的ID"):
-                    send_telegram_message_to(chat_id, f"你的 Telegram User ID：{user_id}\n当前 Chat ID：{chat_id}")
-                    if not TELEGRAM_ADMIN_USER_IDS:
-                        send_telegram_message_to(chat_id, "未配置管理员ID。请在 .env 添加：TELEGRAM_ADMIN_USER_ID=<你的User ID>，然后重启脚本。")
-                    continue
-                if TELEGRAM_ADMIN_USER_IDS and user_id not in TELEGRAM_ADMIN_USER_IDS:
-                    send_telegram_message_to(chat_id, "无权限。")
-                    continue
-                if not TELEGRAM_ADMIN_USER_IDS:
-                    send_telegram_message_to(chat_id, "未配置管理员ID。发送 /whoami 获取你的User ID，然后在 .env 配置 TELEGRAM_ADMIN_USER_ID 并重启。")
-                    continue
-                out = _handle_admin_command(text)
-                if out:
-                    if t in ("/menu", "菜单"):
-                        cfg = get_monitor_config()
-                        kb = _admin_menu_keyboard(cfg)
-                        send_telegram_message_to(chat_id, out, reply_markup=kb)
-                    else:
-                        send_telegram_message_to(chat_id, out)
-        except Exception:
-            time.sleep(3)
-
-def start_admin_bot():
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CONTROL_BOT:
-        return False
-    t = threading.Thread(target=_run_admin_polling, daemon=True)
-    t.start()
-    return True
+def getenv_float(name, default):
+    s = getenv_str(name, None)
+    if s is None:
+        return default
+    try:
+        return float(s)
+    except Exception:
+        return default
 
 ERROR_NAME_ZH = {
     "NotEnoughBalanceToStake": "余额不足，无法质押",
@@ -795,6 +281,343 @@ def get_robust_session():
         "Accept": "application/json"
     })
     return session
+
+def get_telegram_config():
+    token = getenv_str("TELEGRAM_BOT_TOKEN", getenv_str("TG_BOT_TOKEN", None))
+    chat_id_raw = getenv_str("TELEGRAM_CHAT_ID", getenv_str("TG_CHAT_ID", None))
+    if not token or not chat_id_raw:
+        return None
+    chat_id_s = str(chat_id_raw).strip()
+    chat_ids = []
+    for part in chat_id_s.replace(";", ",").replace("|", ",").split(","):
+        p = part.strip()
+        if not p:
+            continue
+        chat_ids.append(p)
+    if not chat_ids:
+        return None
+    return (token.strip(), chat_ids)
+
+def get_telegram_session():
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    })
+    return session
+
+def tg_throttle(min_interval_seconds):
+    global _tg_last_sent_ts
+    try:
+        mi = float(min_interval_seconds)
+    except Exception:
+        mi = 0.0
+    if mi <= 0:
+        _tg_last_sent_ts = time.time()
+        return
+    now = time.time()
+    delta = now - float(_tg_last_sent_ts or 0.0)
+    if delta < mi:
+        time.sleep(mi - delta)
+    _tg_last_sent_ts = time.time()
+
+def tg_send_text(session, bot_token, chat_id, text):
+    if not text:
+        return True
+    if not session or not bot_token or not chat_id:
+        return False
+    safe_text = str(text)
+    if len(safe_text) > 3900:
+        safe_text = safe_text[:3900] + "\n…(truncated)"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": safe_text,
+        "disable_web_page_preview": True
+    }
+    try:
+        resp = session.post(url, json=payload, timeout=15)
+    except Exception as e:
+        print(f"Telegram 推送失败: {type(e).__name__}")
+        return False
+    if resp.status_code != 200:
+        desc = None
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                desc = data.get("description")
+        except Exception:
+            desc = None
+        if desc:
+            print(f"Telegram 推送失败: HTTP {resp.status_code} {desc}")
+        else:
+            print(f"Telegram 推送失败: HTTP {resp.status_code}")
+        return False
+    return True
+
+def tg_send_text_multi(session, bot_token, chat_ids, text, min_interval_seconds):
+    if not chat_ids:
+        return False
+    ok = True
+    for cid in chat_ids:
+        tg_throttle(min_interval_seconds)
+        if not tg_send_text(session, bot_token, cid, text):
+            ok = False
+    return ok
+
+def write_dotenv_key(key, value):
+    load_dotenv_if_present()
+    if not _dotenv_path:
+        return False
+    k = (key or "").strip()
+    if not k:
+        return False
+    v = "" if value is None else str(value)
+    with _dotenv_lock:
+        try:
+            with open(_dotenv_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+        out = []
+        written = False
+        for raw in lines:
+            line = raw.rstrip("\n")
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                out.append(line)
+                continue
+            kk, _ = s.split("=", 1)
+            if kk.strip() != k:
+                out.append(line)
+                continue
+            if not written:
+                out.append(f"{k}={v}")
+                written = True
+        if not written:
+            if out and out[-1].strip() != "":
+                out.append("")
+            out.append(f"{k}={v}")
+        text = "\n".join(out).rstrip() + "\n"
+        try:
+            with open(_dotenv_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            return False
+    refresh_dotenv_cache_if_needed()
+    return True
+
+def parse_int_list(s):
+    if not s:
+        return []
+    out = []
+    for part in str(s).replace(";", ",").replace("|", ",").split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            out.append(int(p))
+        except Exception:
+            continue
+    return out
+
+def get_tg_admin_user_ids():
+    raw = getenv_str("TG_ADMIN_USER_IDS", getenv_str("TELEGRAM_ADMIN_USER_IDS", ""))
+    return set(parse_int_list(raw))
+
+def tg_api_get_updates(session, bot_token, offset, timeout_seconds):
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params = {
+        "timeout": int(timeout_seconds),
+        "offset": int(offset) if offset is not None else 0,
+        "allowed_updates": json.dumps(["message"])
+    }
+    try:
+        resp = session.get(url, params=params, timeout=int(timeout_seconds) + 10)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, dict) or not data.get("ok"):
+            return []
+        result = data.get("result", [])
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
+
+def mask_token(t):
+    s = str(t or "")
+    if len(s) <= 12:
+        return "****"
+    return s[:6] + "..." + s[-6:]
+
+def tg_admin_handle_message(tg_session, bot_token, message):
+    if not isinstance(message, dict):
+        return
+    chat = message.get("chat", {}) if isinstance(message.get("chat"), dict) else {}
+    chat_id = chat.get("id")
+    chat_type = chat.get("type")
+    from_user = message.get("from", {}) if isinstance(message.get("from"), dict) else {}
+    user_id = from_user.get("id")
+    text = message.get("text")
+    if chat_id is None or user_id is None or not isinstance(text, str):
+        return
+    cmd = text.strip()
+    if cmd == "":
+        return
+
+    is_private = (chat_type == "private")
+    admins = get_tg_admin_user_ids()
+    is_admin = (int(user_id) in admins) if admins else False
+
+    if cmd.startswith("/whoami"):
+        name = (from_user.get("username") or from_user.get("first_name") or "").strip()
+        payload = "\n".join([
+            "你的 Telegram 用户 ID：",
+            str(user_id),
+            f"用户名：{name}" if name else "用户名：N/A",
+        ])
+        tg_send_text(tg_session, bot_token, chat_id, payload)
+        return
+
+    if cmd.startswith("/help"):
+        payload = "\n".join([
+            "可用命令：",
+            "/whoami  获取你的用户ID",
+            "/show    查看当前参数",
+            "/get KEY 查看某个参数",
+            "/set KEY VALUE  设置参数（仅管理员，私聊）",
+        ])
+        tg_send_text(tg_session, bot_token, chat_id, payload)
+        return
+
+    if not is_private:
+        return
+
+    if not admins:
+        payload = "\n".join([
+            "未配置管理员，已拒绝管理命令。",
+            "先私聊发送 /whoami 拿到用户ID，然后在 .env 里加：",
+            "TG_ADMIN_USER_IDS=你的用户ID",
+        ])
+        tg_send_text(tg_session, bot_token, chat_id, payload)
+        return
+
+    if not is_admin:
+        tg_send_text(tg_session, bot_token, chat_id, "无权限。")
+        return
+
+    if cmd.startswith("/show"):
+        token = getenv_str("TELEGRAM_BOT_TOKEN", getenv_str("TG_BOT_TOKEN", ""))
+        payload = "\n".join([
+            f"TELEGRAM_BOT_TOKEN={mask_token(token)}",
+            f"TELEGRAM_CHAT_ID={getenv_str('TELEGRAM_CHAT_ID', getenv_str('TG_CHAT_ID', ''))}",
+            f"TG_MIN_INTERVAL_SECONDS={getenv_str('TG_MIN_INTERVAL_SECONDS', getenv_str('TELEGRAM_MIN_INTERVAL_SECONDS', '1'))}",
+            f"MIN_TAO_THRESHOLD={getenv_str('MIN_TAO_THRESHOLD', '0.5')}",
+            f"HISTORY_LIMIT={getenv_str('HISTORY_LIMIT', '10')}",
+            f"SUBSTRATE_WSS_URL={getenv_str('SUBSTRATE_WSS_URL', 'wss://entrypoint-finney.opentensor.ai:443')}",
+            f"PRICE_REFRESH_SECONDS={getenv_str('PRICE_REFRESH_SECONDS', '30')}",
+            f"HEARTBEAT_EVERY_BLOCKS={getenv_str('HEARTBEAT_EVERY_BLOCKS', '5')}",
+            f"PROCESSED_HASHES_MAX={getenv_str('PROCESSED_HASHES_MAX', '5000')}",
+            f"PROCESSED_HASHES_KEEP={getenv_str('PROCESSED_HASHES_KEEP', '2000')}",
+        ])
+        tg_send_text(tg_session, bot_token, chat_id, payload)
+        return
+
+    if cmd.startswith("/get "):
+        parts = cmd.split(None, 1)
+        if len(parts) < 2:
+            tg_send_text(tg_session, bot_token, chat_id, "用法：/get KEY")
+            return
+        key = parts[1].strip()
+        if key == "":
+            tg_send_text(tg_session, bot_token, chat_id, "用法：/get KEY")
+            return
+        val = getenv_str(key, "")
+        if key in ("TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"):
+            val = mask_token(val)
+        tg_send_text(tg_session, bot_token, chat_id, f"{key}={val}")
+        return
+
+    if cmd.startswith("/set "):
+        parts = cmd.split(None, 2)
+        if len(parts) < 3:
+            tg_send_text(tg_session, bot_token, chat_id, "用法：/set KEY VALUE")
+            return
+        key = parts[1].strip()
+        value = parts[2].strip()
+        blocked = {"TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"}
+        allowed = {
+            "TELEGRAM_CHAT_ID",
+            "TG_CHAT_ID",
+            "TG_MIN_INTERVAL_SECONDS",
+            "TELEGRAM_MIN_INTERVAL_SECONDS",
+            "MIN_TAO_THRESHOLD",
+            "HISTORY_LIMIT",
+            "SUBSTRATE_WSS_URL",
+            "PRICE_REFRESH_SECONDS",
+            "HEARTBEAT_EVERY_BLOCKS",
+            "PROCESSED_HASHES_MAX",
+            "PROCESSED_HASHES_KEEP",
+            "TG_ADMIN_USER_IDS",
+            "TELEGRAM_ADMIN_USER_IDS",
+        }
+        if key in blocked:
+            tg_send_text(tg_session, bot_token, chat_id, "该参数不允许通过私聊修改。")
+            return
+        if key not in allowed:
+            tg_send_text(tg_session, bot_token, chat_id, "不支持的参数。用 /show 查看可用参数。")
+            return
+        file_key = "TELEGRAM_CHAT_ID" if key == "TG_CHAT_ID" else key
+        file_key = "TG_MIN_INTERVAL_SECONDS" if key == "TELEGRAM_MIN_INTERVAL_SECONDS" else file_key
+        ok = write_dotenv_key(file_key, value)
+        if ok:
+            tg_send_text(tg_session, bot_token, chat_id, f"已更新：{file_key}={value}")
+        else:
+            tg_send_text(tg_session, bot_token, chat_id, "更新失败（检查 .env 是否可写）。")
+        return
+
+def start_tg_admin_bot():
+    token = getenv_str("TELEGRAM_BOT_TOKEN", getenv_str("TG_BOT_TOKEN", None))
+    if not token:
+        return None
+    session = get_robust_session()
+    offset = 0
+
+    def loop():
+        nonlocal offset
+        while True:
+            updates = tg_api_get_updates(session, token, offset, 30)
+            for upd in updates:
+                if not isinstance(upd, dict):
+                    continue
+                uid = upd.get("update_id")
+                if isinstance(uid, int):
+                    offset = max(offset, uid + 1)
+                msg = upd.get("message")
+                if isinstance(msg, dict):
+                    tg_admin_handle_message(session, token, msg)
+            time.sleep(1)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return t
+
+def format_volume_str(tao_amount, alpha_amount, tao_equiv):
+    if isinstance(tao_amount, float):
+        return f"{tao_amount:,.4f} TAO"
+    if isinstance(alpha_amount, float) and isinstance(tao_equiv, float):
+        return f"{tao_equiv:,.4f} TAO（{alpha_amount:,.4f} α）"
+    if isinstance(tao_equiv, float):
+        return f"{tao_equiv:,.4f} TAO"
+    return "未知"
 
 def to_ss58(hex_address):
     """
@@ -973,9 +796,12 @@ def get_block_cn_time_str(extrinsics):
 
 def monitor_realtime_failed(min_tao):
     global processed_hashes
-    substrate = SubstrateInterface(url="wss://entrypoint-finney.opentensor.ai:443")
+    wss_url = getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443")
+    substrate = SubstrateInterface(url=wss_url)
     substrate.init_runtime()
     session = get_robust_session()
+    tg = get_telegram_config()
+    tg_session = get_telegram_session() if tg else None
     alpha_price_map = {}
     last_price_refresh = 0.0
 
@@ -1035,7 +861,8 @@ def monitor_realtime_failed(min_tao):
     def refresh_prices_if_needed():
         nonlocal alpha_price_map, last_price_refresh
         now = time.time()
-        if now - last_price_refresh >= 30 or not alpha_price_map:
+        price_refresh_seconds = getenv_float("PRICE_REFRESH_SECONDS", 30.0)
+        if now - last_price_refresh >= price_refresh_seconds or not alpha_price_map:
             alpha_price_map = get_alpha_price_map(session)
             last_price_refresh = now
 
@@ -1044,7 +871,8 @@ def monitor_realtime_failed(min_tao):
         try:
             header = obj.get("header", {})
             block_number = header.get("number")
-            if isinstance(update_nr, int) and update_nr % 5 == 0 and block_number is not None:
+            heartbeat_every_blocks = getenv_int("HEARTBEAT_EVERY_BLOCKS", 5)
+            if isinstance(update_nr, int) and heartbeat_every_blocks > 0 and update_nr % heartbeat_every_blocks == 0 and block_number is not None:
                 print(f"心跳：正在监控新区块 {block_number}...")
             block_hash = substrate.get_block_hash(block_number)
             block = substrate.get_block(block_hash=block_hash)
@@ -1073,12 +901,6 @@ def monitor_realtime_failed(min_tao):
             ts_cn = get_block_cn_time_str(extrinsics)
 
             batch_seen = set()
-            tg_lines = []
-            cfg_snapshot = get_monitor_config()
-            cfg_min_tao = float(cfg_snapshot.get("min_tao") or min_tao or 0.0)
-            cfg_mode = cfg_snapshot.get("mode") or "all"
-            cfg_addresses = set([_normalize_address(a) for a in (cfg_snapshot.get("addresses") or []) if _normalize_address(a)])
-            push_enabled = bool(cfg_snapshot.get("push_enabled"))
             for idx in sorted(failed_idx):
                 if idx < 0 or idx >= len(extrinsics):
                     continue
@@ -1104,18 +926,14 @@ def monitor_realtime_failed(min_tao):
                     full_name, args_dict, alpha_price_map
                 )
                 
-                if tao_equiv is None or tao_equiv < cfg_min_tao:
+                current_min_tao = getenv_float("MIN_TAO_THRESHOLD", float(min_tao) if isinstance(min_tao, (int, float)) else 0.5)
+                if tao_equiv is None or tao_equiv < current_min_tao:
                     continue
                 tx_hash = exv.get("extrinsic_hash", "")
                 if tx_hash in processed_hashes:
                     continue
                 trade_side = get_trade_side_zh(f"SubtensorModule.{call.get('call_function', '')}")
-                signer = _normalize_address(exv.get("address") or "N/A") or "N/A"
-                if cfg_mode == "addresses":
-                    if not cfg_addresses:
-                        continue
-                    if signer not in cfg_addresses:
-                        continue
+                signer = exv.get("address") or "N/A"
                 fail_reason = failed_reason_by_idx.get(idx, "未知")
                 fingerprint = (
                     signer,
@@ -1129,50 +947,38 @@ def monitor_realtime_failed(min_tao):
                     continue
                 batch_seen.add(fingerprint)
                 processed_hashes.add(tx_hash)
-                if len(processed_hashes) > 5000:
-                    processed_hashes = set(list(processed_hashes)[-2000:])
+                processed_hashes_max = getenv_int("PROCESSED_HASHES_MAX", 5000)
+                processed_hashes_keep = getenv_int("PROCESSED_HASHES_KEEP", 2000)
+                if len(processed_hashes) > processed_hashes_max:
+                    processed_hashes = set(list(processed_hashes)[-processed_hashes_keep:])
 
                 print(f"交易时间：{ts_cn}（北京时间）")
                 print(f"子网编号：{netuid_int if netuid_int is not None else 'Global'}")
-                if isinstance(tao_amount, float):
-                    print(f"交易量：{tao_amount:,.4f} TAO")
-                elif isinstance(alpha_amount, float) and isinstance(tao_equiv, float):
-                    print(f"交易量：{tao_equiv:,.4f} TAO（{alpha_amount:,.4f} α）")
-                elif isinstance(tao_equiv, float):
-                    print(f"交易量：{tao_equiv:,.4f} TAO")
-                else:
+                vol_str = format_volume_str(tao_amount, alpha_amount, tao_equiv)
+                if vol_str == "未知":
                     print("交易量：未知")
+                else:
+                    print(f"交易量：{vol_str}")
                 print(f"用户钱包：{signer}")
                 print(f"交易哈希：{tx_hash}")
                 print(f"交易类型：{trade_side}")
                 print(f"失败原因：{fail_reason}")
                 print("-" * 40)
-                if not push_enabled:
-                    continue
-                if TELEGRAM_SEND_MODE == "single":
-                    msg = format_failed_tx_message(
-                        ts_cn, netuid_int, tao_amount, alpha_amount, tao_equiv, signer, tx_hash, trade_side, fail_reason
-                    )
-                    enqueue_telegram_message(msg)
-                else:
-                    tg_lines.append(format_failed_tx_line(
-                        ts_cn, netuid_int, tao_amount, alpha_amount, tao_equiv, signer, tx_hash, trade_side, fail_reason
-                    ))
-            if tg_lines and TELEGRAM_SEND_MODE != "single":
-                header_line = f"失败交易提醒（共 {len(tg_lines)} 笔）"
-                chunks = []
-                cur = header_line
-                for line in tg_lines:
-                    if len(cur) + 1 + len(line) > 3600:
-                        chunks.append(cur)
-                        cur = header_line + "\n" + line
-                    else:
-                        cur = cur + "\n" + line
-                if cur:
-                    chunks.append(cur)
-                for ch in chunks:
-                    if push_enabled:
-                        enqueue_telegram_message(ch)
+                tg2 = get_telegram_config()
+                if tg2:
+                    token, chat_ids = tg2
+                    tg_min_interval = getenv_str("TG_MIN_INTERVAL_SECONDS", getenv_str("TELEGRAM_MIN_INTERVAL_SECONDS", "1"))
+                    msg = "\n".join([
+                        "链上失败交易",
+                        f"时间：{ts_cn}（北京时间）",
+                        f"子网：{netuid_int if netuid_int is not None else 'Global'}",
+                        f"交易量：{vol_str}",
+                        f"钱包：{signer}",
+                        f"哈希：{tx_hash}",
+                        f"类型：{trade_side}",
+                        f"原因：{fail_reason}",
+                    ])
+                    tg_send_text_multi(tg_session or get_telegram_session(), token, chat_ids, msg, tg_min_interval)
         except Exception as e:
             print(f"处理区块 {header.get('number')} 时发生错误: {e}")
             return None
@@ -1183,11 +989,11 @@ def monitor_realtime_failed(min_tao):
 def get_failed_transactions(session, limit=100, min_tao=50.0):
     global processed_hashes
     api_url = f"https://taostats.io/api/extrinsic/extrinsic?success=false&limit={limit}"
+    tg = get_telegram_config()
+    tg_session = get_telegram_session() if tg else None
+    tg_min_interval = getenv_str("TG_MIN_INTERVAL_SECONDS", getenv_str("TELEGRAM_MIN_INTERVAL_SECONDS", "1"))
     
     try:
-        cfg = get_monitor_config()
-        cfg_mode = cfg.get("mode") or "all"
-        cfg_addresses = set([_normalize_address(a) for a in (cfg.get("addresses") or []) if _normalize_address(a)])
         alpha_price_map = get_alpha_price_map(session)
         response = session.get(api_url, timeout=15)
         response.raise_for_status()
@@ -1210,14 +1016,6 @@ def get_failed_transactions(session, limit=100, min_tao=50.0):
                     processed_hashes.add(tx_hash)
                     continue
                 if tao_equiv >= min_tao:
-                    signer_addr = _normalize_address(tx.get("signer_address") or "")
-                    if cfg_mode == "addresses":
-                        if not cfg_addresses:
-                            processed_hashes.add(tx_hash)
-                            continue
-                        if signer_addr not in cfg_addresses:
-                            processed_hashes.add(tx_hash)
-                            continue
                     tx['trade_tao'] = tao_amount
                     tx['trade_alpha'] = alpha_amount
                     tx['trade_tao_equiv'] = tao_equiv
@@ -1238,8 +1036,10 @@ def get_failed_transactions(session, limit=100, min_tao=50.0):
                         new_transactions.append(tx)
                 processed_hashes.add(tx_hash)
         
-        if len(processed_hashes) > 5000:
-            processed_hashes = set(list(processed_hashes)[-2000:])
+        processed_hashes_max = getenv_int("PROCESSED_HASHES_MAX", 5000)
+        processed_hashes_keep = getenv_int("PROCESSED_HASHES_KEEP", 2000)
+        if len(processed_hashes) > processed_hashes_max:
+            processed_hashes = set(list(processed_hashes)[-processed_hashes_keep:])
 
         if new_transactions:
             new_transactions.sort(key=lambda x: x.get('timestamp', ''))
@@ -1257,18 +1057,27 @@ def get_failed_transactions(session, limit=100, min_tao=50.0):
 
                 print(f"交易时间：{ts}（北京时间）")
                 print(f"子网编号：{netuid}")
-                if isinstance(tao_amount, float):
-                    print(f"交易量：{tao_amount:,.4f} TAO")
-                elif isinstance(alpha_amount, float) and isinstance(tao_equiv, float):
-                    print(f"交易量：{tao_equiv:,.4f} TAO（{alpha_amount:,.4f} α）")
-                elif isinstance(tao_equiv, float):
-                    print(f"交易量：{tao_equiv:,.4f} TAO")
-                else:
+                vol_str = format_volume_str(tao_amount, alpha_amount, tao_equiv)
+                if vol_str == "未知":
                     print("交易量：未知")
+                else:
+                    print(f"交易量：{vol_str}")
                 print(f"用户钱包：{ss58_signer}")
                 print(f"交易哈希：{tx_hash}")
                 print(f"交易类型：{trade_side}")
                 print("-" * 40)
+                if tg:
+                    token, chat_ids = tg
+                    msg = "\n".join([
+                        "历史失败交易",
+                        f"时间：{ts}（北京时间）",
+                        f"子网：{netuid}",
+                        f"交易量：{vol_str}",
+                        f"钱包：{ss58_signer}",
+                        f"哈希：{tx_hash}",
+                        f"类型：{trade_side}",
+                    ])
+                    tg_send_text_multi(tg_session, token, chat_ids, msg, tg_min_interval)
         else:
             pass
 
@@ -1276,16 +1085,14 @@ def get_failed_transactions(session, limit=100, min_tao=50.0):
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 抓取异常: {e}")
 
 if __name__ == "__main__":
-    cfg = get_monitor_config()
-    MIN_TAO_THRESHOLD = float(cfg.get("min_tao") or 0.0)
-    mode_text = "全部地址" if cfg.get("mode") == "all" else "仅指定地址"
-    print(f"正在实时监控链上失败交易 (交易量 > {MIN_TAO_THRESHOLD} TAO, {mode_text})")
-    if TELEGRAM_CONTROL_BOT:
-        start_admin_bot()
+    start_tg_admin_bot()
+    MIN_TAO_THRESHOLD = getenv_float("MIN_TAO_THRESHOLD", 0.5)
+    HISTORY_LIMIT = getenv_int("HISTORY_LIMIT", 10)
+    print(f"正在实时监控链上失败交易 (交易量 > {MIN_TAO_THRESHOLD} TAO)")
     
     # 先检查历史失败交易，看是否有记录
     session = get_robust_session()
     print("正在获取最近历史失败交易...")
-    get_failed_transactions(session, limit=10, min_tao=MIN_TAO_THRESHOLD)
+    get_failed_transactions(session, limit=HISTORY_LIMIT, min_tao=MIN_TAO_THRESHOLD)
     
     monitor_realtime_failed(MIN_TAO_THRESHOLD)

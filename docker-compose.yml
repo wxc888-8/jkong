@@ -1,0 +1,11 @@
+services:
+  taotao_failed_tx:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taotao_failed_tx
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env
