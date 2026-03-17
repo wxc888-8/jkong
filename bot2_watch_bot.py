@@ -1005,6 +1005,57 @@ def format_event_zh(call_module, call_function):
             return "转账"
     return key
 
+def format_event_kind_en(call_module, call_function):
+    mod = str(call_module or "")
+    fun = str(call_function or "")
+    key = f"{mod}.{fun}"
+    mapping = {
+        "Balances.transfer": "Transfer",
+        "Balances.transfer_keep_alive": "TransferKeepAlive",
+        "SubtensorModule.add_stake": "StakeAdded",
+        "SubtensorModule.add_stake_limit": "StakeAdded",
+        "SubtensorModule.remove_stake": "StakeRemoved",
+        "SubtensorModule.remove_stake_limit": "StakeRemoved",
+    }
+    if key in mapping:
+        return mapping[key]
+    return fun or key
+
+def format_side_short(ev_type):
+    if ev_type == "stake":
+        return "buy"
+    if ev_type == "unstake":
+        return "sell"
+    if ev_type == "transfer":
+        return "transfer"
+    return "other"
+
+def format_side_color(ev_type):
+    if ev_type == "stake":
+        return "🟩"
+    if ev_type == "unstake":
+        return "🟥"
+    if ev_type == "transfer":
+        return "🟦"
+    return "⬜"
+
+def get_netuid_from_args(args_dict):
+    return safe_int((args_dict or {}).get("netuid") or (args_dict or {}).get("originNetuid") or (args_dict or {}).get("origin_netuid"))
+
+def get_address_netuid_tao_equiv(address, netuid, alpha_prices):
+    if netuid is None:
+        return None
+    try:
+        alpha_by_netuid = get_coldkey_alpha_summary(address)
+        alpha_rao = int(alpha_by_netuid.get(int(netuid), 0) or 0)
+        alpha = tao_from_rao(alpha_rao)
+        price = alpha_prices.get(int(netuid))
+        if price is None:
+            return None
+        return alpha * float(price)
+    except Exception:
+        return None
+
 def call_args_list_to_dict(call_args):
     if isinstance(call_args, dict):
         return call_args
@@ -1076,39 +1127,61 @@ def start_chain_monitor(conn, session, token):
                     if wanted != "all" and wanted != ev_type:
                         continue
                     tx_hash = exv.get("extrinsic_hash", "")
-                    title = "📌 *地址事件通知*"
-                    signer_short = short_addr(signer, 6, 6)
-                    lines = [
-                        title,
-                        f"⏰ 时间：{md_code(now_cn_str())}",
-                        f"👤 地址：{md_code(signer_short)}" + (f"（{md_code(remark)}）" if remark else ""),
-                        f"🧩 事件：{md_bold(format_event_zh(call_module, call_function))}",
-                    ]
+                    netuid = get_netuid_from_args(args_dict)
+                    side = format_side_short(ev_type)
+                    color = format_side_color(ev_type)
+                    kind = format_event_kind_en(call_module, call_function)
+                    signer_short = short_addr(signer, 4, 4)
+                    account_url = taostats_account_url(signer)
+
+                    if netuid is not None:
+                        lines = [f"{color}🖥️ SN{netuid}: {side} ({kind})"]
+                    else:
+                        lines = [f"{color}🖥️ {side} ({kind})"]
+
+                    lines.append(f"Account: 🌟{md_code(signer_short)} ([taostats]({account_url}))")
+                    if remark:
+                        lines.append(f"📝 备注: {sanitize_md_code(remark)}")
                     if ev_type == "transfer":
                         dest = args_dict.get("dest") or args_dict.get("dest_addr") or args_dict.get("to")
                         tao_amt = fmt_tao_from_rao(args_dict.get("value") or args_dict.get("amount") or args_dict.get("balance"))
                         if dest:
-                            lines.append(f"➡️ 目标：{md_code(short_addr(dest, 6, 6))}")
+                            lines.append(f"➡️ To: {md_code(short_addr(dest, 4, 4))}")
                         if tao_amt is not None:
-                            lines.append(f"💰 金额：{md_code(fmt_num(tao_amt, 3))} 𝞃")
-                            if tao_usd:
-                                lines.append(f"≈ {md_code(fmt_num(tao_amt * tao_usd, 2))} USD")
+                            usd_txt = f" (${fmt_num(tao_amt * tao_usd, 2)})" if tao_usd else ""
+                            lines.append(f"{fmt_num(tao_amt, 6)}𝞃{usd_txt}")
                     if ev_type in ("stake", "unstake"):
-                        netuid = safe_int(args_dict.get("netuid") or args_dict.get("originNetuid") or args_dict.get("origin_netuid"))
                         raw_alpha = args_dict.get("amountStaked") or args_dict.get("amount_staked") or args_dict.get("amountUnstaked") or args_dict.get("amount_unstaked")
                         alpha_amt = fmt_tao_from_rao(raw_alpha)
-                        if netuid is not None:
-                            lines.append(f"🌐 子网：{md_bold('SN' + str(netuid))}")
                         if alpha_amt is not None:
-                            lines.append(f"🪙 数量：{md_code(fmt_num(alpha_amt, 3))} α")
+                            tao_equiv = None
+                            price_per_alpha = None
                             if netuid is not None and netuid in alpha_prices:
-                                tao_equiv = alpha_amt * float(alpha_prices[netuid])
-                                lines.append(f"≈ {md_code(fmt_num(tao_equiv, 3))} 𝞃")
-                                if tao_usd:
-                                    lines.append(f"≈ {md_code(fmt_num(tao_equiv * tao_usd, 2))} USD")
+                                price_per_alpha = float(alpha_prices[netuid])
+                                tao_equiv = alpha_amt * price_per_alpha
+
+                            if tao_equiv is None:
+                                lines.append(f"{fmt_num(alpha_amt, 2)}α")
+                            else:
+                                usd_txt = f" (${fmt_num(tao_equiv * tao_usd, 2)})" if tao_usd else ""
+                                lines.append(f"{fmt_num(alpha_amt, 2)}α ⇄ {fmt_num(tao_equiv, 6)}𝞃{usd_txt}")
+
+                            if price_per_alpha is not None:
+                                price_usd_txt = f" (${fmt_num(price_per_alpha * tao_usd, 2)})" if tao_usd else ""
+                                lines.append(f"Price per alpha: {fmt_num(price_per_alpha, 6)}𝞃{price_usd_txt}")
+
+                    if netuid is not None:
+                        holding_tao_equiv = get_address_netuid_tao_equiv(signer, netuid, alpha_prices)
+                        if holding_tao_equiv is not None:
+                            usd_txt = f" (${fmt_num(holding_tao_equiv * tao_usd, 2)})" if tao_usd else ""
+                            lines.append("")
+                            lines.append(f"🌠SN{netuid}:💰持有≈ {fmt_num(holding_tao_equiv, 3)} 𝞃{usd_txt}")
+
+                    bal = get_system_balance_tao(signer)
+                    lines.append(f"💰 可用余额(free): {fmt_num(bal.get('free', 0.0), 6)}𝞃")
                     if tx_hash:
-                        lines.append(f"🔗 哈希：{md_code(short_addr(tx_hash, 10, 10))}")
-                        lines.append(f"哈希(全)：{md_code(tx_hash)}")
+                        lines.append(f"Tx: {md_code(short_addr(tx_hash, 10, 10))}")
+                        lines.append(f"Hash: {md_code(tx_hash)}")
                     send_md(session, token, chat_id, "\n".join(lines))
         except Exception:
             return None
