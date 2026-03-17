@@ -186,6 +186,38 @@ def tg_get_updates(session, bot_token, offset, timeout_seconds):
     except Exception:
         return []
 
+def tg_set_my_commands(session, bot_token):
+    url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
+    commands = [
+        {"command": "help", "description": "菜单/帮助"},
+        {"command": "watch", "description": "添加监听地址"},
+        {"command": "batchadd", "description": "批量添加地址"},
+        {"command": "unwatch", "description": "删除监听地址"},
+        {"command": "batchremove", "description": "批量删除地址"},
+        {"command": "remark", "description": "更新地址备注"},
+        {"command": "list", "description": "查看监听列表"},
+        {"command": "setevents", "description": "设置监听事件类型"},
+        {"command": "price", "description": "查看TAO价格"},
+        {"command": "query", "description": "查询地址完整信息"},
+        {"command": "balance", "description": "回复消息查询余额"},
+        {"command": "hold", "description": "子网持有量排行"},
+        {"command": "holdall", "description": "各子网持有量汇总"},
+        {"command": "balances", "description": "资产汇总"},
+        {"command": "status", "description": "查看当前状态"},
+        {"command": "whoami", "description": "查看我的用户ID"},
+        {"command": "contact", "description": "联系管理员"},
+        {"command": "cancel", "description": "取消当前操作"},
+    ]
+    payload = {"commands": commands}
+    try:
+        resp = session.post(url, json=payload, timeout=20)
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        return bool(isinstance(data, dict) and data.get("ok"))
+    except Exception:
+        return False
+
 def now_cn_str():
     return datetime.now(timezone.utc).astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -549,6 +581,10 @@ def handle_command(conn, session, token, msg):
 
     is_private = (chat_type == "private")
     cmd = (text or "").strip() if isinstance(text, str) else ""
+
+    if cmd.startswith("/start"):
+        send_md(session, token, chat_id, cmd_help())
+        return
 
     if cmd.startswith("/help"):
         send_md(session, token, chat_id, cmd_help())
@@ -1196,6 +1232,7 @@ def main():
         return
     poll_timeout = getenv_int("BOT2_POLL_TIMEOUT", 30)
     session = get_session()
+    tg_set_my_commands(session, token)
     conn = db_connect()
     db_init(conn)
 
