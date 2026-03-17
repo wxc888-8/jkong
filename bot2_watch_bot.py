@@ -1092,6 +1092,21 @@ def get_address_netuid_tao_equiv(address, netuid, alpha_prices):
     except Exception:
         return None
 
+def get_address_netuid_alpha_and_tao_equiv(address, netuid, alpha_prices):
+    if netuid is None:
+        return (0.0, None, None)
+    try:
+        alpha_by_netuid = get_coldkey_alpha_summary(address)
+        alpha_rao = int(alpha_by_netuid.get(int(netuid), 0) or 0)
+        alpha = tao_from_rao(alpha_rao)
+        price = alpha_prices.get(int(netuid))
+        if price is None:
+            return (alpha, None, None)
+        tao_equiv = alpha * float(price)
+        return (alpha, tao_equiv, float(price))
+    except Exception:
+        return (0.0, None, None)
+
 def call_args_list_to_dict(call_args):
     if isinstance(call_args, dict):
         return call_args
@@ -1186,32 +1201,44 @@ def start_chain_monitor(conn, session, token):
                         if tao_amt is not None:
                             usd_txt = f" (${fmt_num(tao_amt * tao_usd, 2)})" if tao_usd else ""
                             lines.append(f"{fmt_num(tao_amt, 6)}𝞃{usd_txt}")
-                    if ev_type in ("stake", "unstake"):
-                        raw_alpha = args_dict.get("amountStaked") or args_dict.get("amount_staked") or args_dict.get("amountUnstaked") or args_dict.get("amount_unstaked")
-                        alpha_amt = fmt_tao_from_rao(raw_alpha)
-                        if alpha_amt is not None:
-                            tao_equiv = None
-                            price_per_alpha = None
-                            if netuid is not None and netuid in alpha_prices:
-                                price_per_alpha = float(alpha_prices[netuid])
-                                tao_equiv = alpha_amt * price_per_alpha
-
-                            if tao_equiv is None:
-                                lines.append(f"{fmt_num(alpha_amt, 2)}α")
-                            else:
-                                usd_txt = f" (${fmt_num(tao_equiv * tao_usd, 2)})" if tao_usd else ""
-                                lines.append(f"{fmt_num(alpha_amt, 2)}α ⇄ {fmt_num(tao_equiv, 6)}𝞃{usd_txt}")
-
-                            if price_per_alpha is not None:
+                    if ev_type == "stake":
+                        raw_tao = args_dict.get("amountStaked") or args_dict.get("amount_staked") or args_dict.get("value") or args_dict.get("amount")
+                        tao_amt = fmt_tao_from_rao(raw_tao)
+                        price_per_alpha = float(alpha_prices.get(netuid)) if (netuid is not None and netuid in alpha_prices) else None
+                        if tao_amt is not None:
+                            usd_txt = f" (${fmt_num(tao_amt * tao_usd, 2)})" if tao_usd else ""
+                            if price_per_alpha:
+                                alpha_equiv = tao_amt / price_per_alpha if price_per_alpha > 0 else None
+                                if alpha_equiv is None:
+                                    lines.append(f"{fmt_num(tao_amt, 6)}𝞃{usd_txt}")
+                                else:
+                                    lines.append(f"{fmt_num(alpha_equiv, 2)}α ⇄ {fmt_num(tao_amt, 6)}𝞃{usd_txt}")
                                 price_usd_txt = f" (${fmt_num(price_per_alpha * tao_usd, 2)})" if tao_usd else ""
                                 lines.append(f"Price per alpha: {fmt_num(price_per_alpha, 6)}𝞃{price_usd_txt}")
+                            else:
+                                lines.append(f"{fmt_num(tao_amt, 6)}𝞃{usd_txt}")
+
+                    if ev_type == "unstake":
+                        raw_alpha = args_dict.get("amountUnstaked") or args_dict.get("amount_unstaked")
+                        alpha_amt = fmt_tao_from_rao(raw_alpha)
+                        price_per_alpha = float(alpha_prices.get(netuid)) if (netuid is not None and netuid in alpha_prices) else None
+                        if alpha_amt is not None:
+                            if price_per_alpha:
+                                tao_equiv = alpha_amt * price_per_alpha
+                                usd_txt = f" (${fmt_num(tao_equiv * tao_usd, 2)})" if tao_usd else ""
+                                lines.append(f"{fmt_num(alpha_amt, 2)}α ⇄ {fmt_num(tao_equiv, 6)}𝞃{usd_txt}")
+                                price_usd_txt = f" (${fmt_num(price_per_alpha * tao_usd, 2)})" if tao_usd else ""
+                                lines.append(f"Price per alpha: {fmt_num(price_per_alpha, 6)}𝞃{price_usd_txt}")
+                            else:
+                                lines.append(f"{fmt_num(alpha_amt, 2)}α")
 
                     if netuid is not None:
-                        holding_tao_equiv = get_address_netuid_tao_equiv(signer, netuid, alpha_prices)
+                        holding_alpha, holding_tao_equiv, _ = get_address_netuid_alpha_and_tao_equiv(signer, netuid, alpha_prices)
                         if holding_tao_equiv is not None:
                             usd_txt = f" (${fmt_num(holding_tao_equiv * tao_usd, 2)})" if tao_usd else ""
                             lines.append("")
-                            lines.append(f"🌠SN{netuid}:💰持有≈ {fmt_num(holding_tao_equiv, 3)} 𝞃{usd_txt}")
+                            lines.append(f"🌠SN{netuid}:💰剩余: {fmt_num(holding_tao_equiv, 3)} 𝞃{usd_txt}")
+                            lines.append(f"Alpha: {fmt_num(holding_alpha, 2)} α")
 
                     bal = get_system_balance_tao(signer)
                     lines.append(f"💰 可用余额(free): {fmt_num(bal.get('free', 0.0), 6)}𝞃")
