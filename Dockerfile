@@ -9,5 +9,6 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY failed_transactions.py /app/failed_transactions.py
+COPY bot2_watch_bot.py /app/bot2_watch_bot.py
 
 CMD ["python", "/app/failed_transactions.py"]

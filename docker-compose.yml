@@ -9,3 +9,15 @@ services:
       - .env
     volumes:
       - ./.env:/app/.env
+  taotao_bot2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taotao_bot2
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env
+      - ./data:/app/data
+    command: ["python", "/app/bot2_watch_bot.py"]

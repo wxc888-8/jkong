@@ -39,6 +39,20 @@ cp .env.example .env
 
 然后修改 `.env` 内容再启动。
 
+## BOT2（地址监控机器人）
+
+BOT2 是一套独立的 Telegram 机器人（单独 token），提供 `/watch /list /setevents` 等指令，监听地址并推送地址相关事件通知。
+
+需要在 `.env` 里额外配置：
+
+- `BOT2_TELEGRAM_BOT_TOKEN`
+- `BOT2_TG_ADMIN_USER_IDS`
+
+Docker 启动后会同时运行两个服务：
+
+- `taotao_failed_tx`：失败交易监控推送
+- `taotao_bot2`：地址监控机器人（数据存储在 `./data/bot2.db`）
+
 ## 私聊管理（热更新）
 
 在 Telegram 私聊机器人，发送：
