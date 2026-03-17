@@ -347,34 +347,34 @@ def cmd_help():
         "🤖 *Bittensor 地址监控机器人*",
         "",
         "📋 *地址管理*",
-        f"{md_code('/watch')} 添加监听地址（交互式）",
-        f"{md_code('/batchadd')} 批量添加地址（多行，地址后可带备注）",
-        f"{md_code('/unwatch')} 删除监听地址（交互式）",
-        f"{md_code('/batchremove')} 批量删除地址（多行）",
-        f"{md_code('/remark <地址> <新备注>')} 更新备注",
-        f"{md_code('/list [页码]')} 查看监听列表（默认第1页）",
+        "/watch 添加监听地址（交互式）",
+        "/batchadd 批量添加地址（多行，地址后可带备注）",
+        "/unwatch 删除监听地址（交互式）",
+        "/batchremove 批量删除地址（多行）",
+        "/remark <地址> <新备注> 更新备注",
+        "/list [页码] 查看监听列表（默认第1页）",
         "",
         "⚙️ *监听设置*",
-        f"{md_code('/setevents')} 设置监听事件类型（all/transfer/stake/unstake）",
+        "/setevents 设置监听事件类型（all/transfer/stake/unstake）",
         "",
         "🔍 *查询/统计*",
-        f"{md_code('/price')} 查看 TAO/USD 价格",
-        f"{md_code('/balance')} 余额查询（可回复包含地址的消息）",
-        f"{md_code('/query <地址>')} 地址信息（余额 + 子网代币）",
-        f"{md_code('/stakes <地址>')} 子网代币（支持回复消息）",
-        f"{md_code('/hold <子网ID>')} 当前聊天监听地址在该子网持有排行",
-        f"{md_code('/holdall')} 各子网持有量汇总（当前聊天）",
-        f"{md_code('/balances [available|total|f]')} 当前聊天资产汇总",
+        "/price 查看 TAO/USD 价格",
+        "/balance 余额查询（可回复包含地址的消息）",
+        "/query <地址> 地址信息（余额 + 子网代币）",
+        "/stakes <地址> 子网代币（支持回复消息）",
+        "/hold <子网ID> 当前聊天监听地址在该子网持有排行",
+        "/holdall 各子网持有量汇总（当前聊天）",
+        "/balances [available|total|f] 当前聊天资产汇总",
         "",
         "ℹ️ *其他*",
-        f"{md_code('/status')} 查看当前状态",
-        f"{md_code('/contact')} 联系管理员",
-        f"{md_code('/cancel')} 取消当前操作",
-        f"{md_code('/whoami')} 获取你的用户ID",
-        f"{md_code('/help')} 显示本帮助",
+        "/status 查看当前状态",
+        "/contact 联系管理员",
+        "/cancel 取消当前操作",
+        "/whoami 获取你的用户ID",
+        "/help 显示本帮助",
         "",
         "💡 *提示*",
-        f"统计命令（{md_code('/hold')} / {md_code('/holdall')} / {md_code('/balances')}）基于“当前聊天”的监听列表，请先用 /watch 添加地址。",
+        "统计命令（/hold /holdall /balances）基于“当前聊天”的监听列表，请先用 /watch 添加地址。",
         "管理员/会员在服务器 .env 配置：BOT2_TG_ADMIN_USER_IDS / BOT2_TG_MEMBER_USER_IDS",
     ])
 
@@ -665,7 +665,7 @@ def handle_command(conn, session, token, msg):
                 ]))
             else:
                 clear_conversation(conn, chat_id)
-                send_md(session, token, chat_id, f"⚠️ 操作已重置，请重新发送 {md_code('/watch')}。")
+                send_md(session, token, chat_id, "⚠️ 操作已重置，请重新发送 /watch。")
             return
         if state == "unwatch_wait_address":
             addr = extract_address(cmd)
@@ -736,7 +736,7 @@ def handle_command(conn, session, token, msg):
         set_conversation(conn, chat_id, "watch_wait_address", {})
         send_md(session, token, chat_id, "\n".join([
             "请发送要监听的地址。",
-            f"发送 {md_code('/cancel')} 可取消。",
+            "发送 /cancel 可取消。",
         ]))
         return
 
@@ -747,7 +747,7 @@ def handle_command(conn, session, token, msg):
             "格式示例：",
             "5xxx...xxx  主钱包",
             "5yyy...yyy  冷钱包",
-            f"发送 {md_code('/cancel')} 取消。",
+            "发送 /cancel 取消。",
         ]))
         return
 
@@ -755,7 +755,7 @@ def handle_command(conn, session, token, msg):
         set_conversation(conn, chat_id, "unwatch_wait_address", {})
         send_md(session, token, chat_id, "\n".join([
             "请发送要删除的地址。",
-            f"发送 {md_code('/cancel')} 取消。",
+            "发送 /cancel 取消。",
         ]))
         return
 
@@ -763,7 +763,7 @@ def handle_command(conn, session, token, msg):
         set_conversation(conn, chat_id, "batchremove_wait_lines", {})
         send_md(session, token, chat_id, "\n".join([
             "请一次发送多行要删除的地址。",
-            f"发送 {md_code('/cancel')} 取消。",
+            "发送 /cancel 取消。",
         ]))
         return
 
@@ -799,7 +799,7 @@ def handle_command(conn, session, token, msg):
         tier, limit = get_limits(user_id)
         cnt = get_watch_count(conn, chat_id)
         if not rows:
-            send_md(session, token, chat_id, f"📭 监听列表为空（{md_code(cnt)}/{md_code(limit)}）。用 {md_code('/watch')} 添加。")
+            send_md(session, token, chat_id, f"📭 监听列表为空（{md_code(cnt)}/{md_code(limit)}）。用 /watch 添加。")
             return
         lines = [f"📋 *监听列表* 第{md_code(page)}页（{md_code(cnt)}/{md_code(limit)} {tier}）"]
         for i, (addr, remark, created_at) in enumerate(rows, start=1 + offset):
@@ -809,7 +809,7 @@ def handle_command(conn, session, token, msg):
             else:
                 lines.append(f"{md_code(i)}. {md_code(short_addr(addr))}")
         lines.append("")
-        lines.append(f"提示：用 {md_code('/list 2')} 翻页；用 {md_code('/remark <地址> <备注>')} 修改备注。")
+        lines.append("提示：用 /list 2 翻页；用 /remark <地址> <备注> 修改备注。")
         send_md(session, token, chat_id, "\n".join(lines))
         return
 
@@ -907,7 +907,7 @@ def handle_command(conn, session, token, msg):
     if cmd.startswith("/holdall"):
         rows = list_watches(conn, chat_id, 3001, 0)
         if not rows:
-            send_md(session, token, chat_id, f"📭 监听列表为空。请先用 {md_code('/watch')} 添加地址。")
+            send_md(session, token, chat_id, "📭 监听列表为空。请先用 /watch 添加地址。")
             return
         alpha_prices = get_alpha_price_map(session)
         agg = {}
@@ -934,14 +934,14 @@ def handle_command(conn, session, token, msg):
             else:
                 lines.append(f"🌠 SN{n}：{fmt_num(tao_equiv, 3)} 𝞃（{fmt_num(alpha, 3)} α）")
         lines.append("")
-        lines.append(f"提示：用 {md_code('/hold <子网ID>')} 看单个子网排行。")
+        lines.append("提示：用 /hold <子网ID> 看单个子网排行。")
         send_md(session, token, chat_id, "\n".join(lines))
         return
 
     if cmd.startswith("/hold"):
         parts = cmd.split(None, 1)
         if len(parts) < 2:
-            send_md(session, token, chat_id, f"用法：{md_code('/hold <子网ID>')}")
+            send_md(session, token, chat_id, "用法：/hold <子网ID>")
             return
         try:
             netuid = int(parts[1].strip())
@@ -950,7 +950,7 @@ def handle_command(conn, session, token, msg):
             return
         rows = list_watches(conn, chat_id, 3001, 0)
         if not rows:
-            send_md(session, token, chat_id, f"📭 监听列表为空。请先用 {md_code('/watch')} 添加地址。")
+            send_md(session, token, chat_id, "📭 监听列表为空。请先用 /watch 添加地址。")
             return
         alpha_prices = get_alpha_price_map(session)
         price = alpha_prices.get(netuid)
@@ -980,7 +980,7 @@ def handle_command(conn, session, token, msg):
             mode = parts[1].strip().lower()
         rows = list_watches(conn, chat_id, 3001, 0)
         if not rows:
-            send_md(session, token, chat_id, f"📭 监听列表为空。请先用 {md_code('/watch')} 添加地址。")
+            send_md(session, token, chat_id, "📭 监听列表为空。请先用 /watch 添加地址。")
             return
         alpha_prices = get_alpha_price_map(session)
         usd = get_tao_price_usd(session)
@@ -1014,7 +1014,7 @@ def handle_command(conn, session, token, msg):
         if usd:
             lines.append(f"总计≈{md_code(fmt_num(total * usd, 2))} USD")
         lines.append("")
-        lines.append(f"提示：{md_code('/balances available')} / {md_code('/balances total')} / {md_code('/balances f')}")
+        lines.append("提示：/balances available / /balances total / /balances f")
         send_md(session, token, chat_id, "\n".join(lines))
         return
 
