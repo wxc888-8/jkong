@@ -312,37 +312,37 @@ def get_limits(user_id):
 
 def cmd_help():
     return "\n".join([
-        "🤖 Bittensor 地址监控机器人",
+        "🤖 *Bittensor 地址监控机器人*",
         "",
-        "地址管理：",
-        "/watch 添加监听地址（交互式）",
-        "/batchadd 批量添加地址（多行，地址后可带备注）",
-        "/unwatch 删除监听地址（交互式）",
-        "/batchremove 批量删除地址（多行）",
-        "/remark <地址> <新备注> 更新备注",
-        "/list [页码] 查看监听列表（默认第1页）",
+        "📋 *地址管理*",
+        f"{md_code('/watch')} 添加监听地址（交互式）",
+        f"{md_code('/batchadd')} 批量添加地址（多行，地址后可带备注）",
+        f"{md_code('/unwatch')} 删除监听地址（交互式）",
+        f"{md_code('/batchremove')} 批量删除地址（多行）",
+        f"{md_code('/remark <地址> <新备注>')} 更新备注",
+        f"{md_code('/list [页码]')} 查看监听列表（默认第1页）",
         "",
-        "监听设置：",
-        "/setevents 设置监听事件类型（all/transfer/stake/unstake）",
+        "⚙️ *监听设置*",
+        f"{md_code('/setevents')} 设置监听事件类型（all/transfer/stake/unstake）",
         "",
-        "查询/统计：",
-        "/price 查看 TAO/USD 价格",
-        "/balance 余额查询（可回复包含地址的消息）",
-        "/query <地址> 查询地址余额+子网持有（支持回复消息）",
-        "/stakes <地址> 查询子网持有（支持回复消息）",
-        "/hold <子网ID> 当前聊天监听地址在该子网持有排行",
-        "/holdall 各子网持有量汇总（当前聊天）",
-        "/balances [available|total|f] 当前聊天资产汇总",
+        "🔍 *查询/统计*",
+        f"{md_code('/price')} 查看 TAO/USD 价格",
+        f"{md_code('/balance')} 余额查询（可回复包含地址的消息）",
+        f"{md_code('/query <地址>')} 地址信息（余额 + 子网代币）",
+        f"{md_code('/stakes <地址>')} 子网代币（支持回复消息）",
+        f"{md_code('/hold <子网ID>')} 当前聊天监听地址在该子网持有排行",
+        f"{md_code('/holdall')} 各子网持有量汇总（当前聊天）",
+        f"{md_code('/balances [available|total|f]')} 当前聊天资产汇总",
         "",
-        "其他：",
-        "/status 查看当前状态",
-        "/contact 联系管理员",
-        "/cancel 取消当前操作",
-        "/whoami 获取你的用户ID",
-        "/help 显示本帮助",
+        "ℹ️ *其他*",
+        f"{md_code('/status')} 查看当前状态",
+        f"{md_code('/contact')} 联系管理员",
+        f"{md_code('/cancel')} 取消当前操作",
+        f"{md_code('/whoami')} 获取你的用户ID",
+        f"{md_code('/help')} 显示本帮助",
         "",
-        "提示：",
-        "这些统计命令（/hold /holdall /balances）基于“当前聊天”的监听列表，请先用 /watch 添加地址。",
+        "💡 *提示*",
+        f"统计命令（{md_code('/hold')} / {md_code('/holdall')} / {md_code('/balances')}）基于“当前聊天”的监听列表，请先用 /watch 添加地址。",
         "管理员/会员在服务器 .env 配置：BOT2_TG_ADMIN_USER_IDS / BOT2_TG_MEMBER_USER_IDS",
     ])
 
@@ -474,6 +474,18 @@ def fmt_num(v, digits=3):
     except Exception:
         return str(v)
 
+def sanitize_md_code(s):
+    return str(s or "").replace("`", "'")
+
+def md_code(s):
+    return f"`{sanitize_md_code(s)}`"
+
+def md_bold(s):
+    return f"*{str(s or '')}*"
+
+def send_md(session, token, chat_id, text):
+    return tg_send_text(session, token, chat_id, text, parse_mode="Markdown")
+
 def short_addr(addr, head=4, tail=4):
     s = str(addr or "")
     if len(s) <= head + tail + 2:
@@ -490,10 +502,10 @@ def build_address_report_markdown(address, free_tao, subnet_tao_items, tao_usd):
     a_short = short_addr(address)
     url = taostats_account_url(address)
     lines = [
-        "💰 *地址信息*",
-        f"📍 `{a_short}` ([taostats]({url}))",
+        f"💰 {md_bold('地址信息')}",
+        f"📍 {md_code(a_short)} ([taostats]({url}))",
         "",
-        "🌐 *子网代币*",
+        f"🌐 {md_bold('子网代币')}",
     ]
     if subnet_tao_items:
         for netuid, tao_equiv in subnet_tao_items:
@@ -539,25 +551,28 @@ def handle_command(conn, session, token, msg):
     cmd = (text or "").strip() if isinstance(text, str) else ""
 
     if cmd.startswith("/help"):
-        tg_send_text(session, token, chat_id, cmd_help())
+        send_md(session, token, chat_id, cmd_help())
         return
 
     if cmd.startswith("/whoami"):
         name = (from_user.get("username") or from_user.get("first_name") or "").strip()
-        tg_send_text(session, token, chat_id, "\n".join([
-            "你的 Telegram 用户 ID：",
-            str(user_id),
-            f"用户名：{name}" if name else "用户名：N/A",
+        send_md(session, token, chat_id, "\n".join([
+            "👤 *你的信息*",
+            f"用户ID：{md_code(user_id)}",
+            f"用户名：{md_code(name) if name else 'N/A'}",
         ]))
         return
 
     if cmd.startswith("/contact"):
-        tg_send_text(session, token, chat_id, cmd_contact())
+        send_md(session, token, chat_id, "\n".join([
+            "☎️ *联系管理员*",
+            str(cmd_contact() or "").strip(),
+        ]))
         return
 
     if cmd.startswith("/cancel"):
         clear_conversation(conn, chat_id)
-        tg_send_text(session, token, chat_id, "已取消。")
+        send_md(session, token, chat_id, "✅ 已取消当前操作。")
         return
 
     conv = get_conversation(conn, chat_id)
@@ -570,17 +585,20 @@ def handle_command(conn, session, token, msg):
         if state == "watch_wait_address":
             addr = extract_address(cmd)
             if not addr:
-                tg_send_text(session, token, chat_id, "没识别到地址，请再发一次地址。")
+                send_md(session, token, chat_id, "❌ 没识别到地址，请再发一次地址。")
                 return
             tier, limit = get_limits(user_id)
             cnt = get_watch_count(conn, chat_id)
             if cnt >= limit:
-                tg_send_text(session, token, chat_id, f"已达到上限：{cnt}/{limit}（{tier}）")
+                send_md(session, token, chat_id, f"⚠️ 已达到上限：{md_code(cnt)}/{md_code(limit)}（{tier}）")
                 clear_conversation(conn, chat_id)
                 return
             data["address"] = addr
             set_conversation(conn, chat_id, "watch_wait_remark", data)
-            tg_send_text(session, token, chat_id, "已收到地址。请发送备注（可直接发“无”跳过）。")
+            send_md(session, token, chat_id, "\n".join([
+                "✅ 已收到地址。",
+                "请发送备注（可直接发“无”跳过）。",
+            ]))
             return
         if state == "watch_wait_remark":
             addr = data.get("address")
@@ -590,24 +608,28 @@ def handle_command(conn, session, token, msg):
             if addr:
                 add_watch(conn, chat_id, addr, remark)
                 clear_conversation(conn, chat_id)
-                tg_send_text(session, token, chat_id, f"已添加监听：{addr}" + (f"\n备注：{remark}" if remark else ""))
+                send_md(session, token, chat_id, "\n".join([
+                    "✅ 已添加监听",
+                    f"地址：{md_code(short_addr(addr))}",
+                    f"备注：{md_code(remark) if remark else '（无）'}",
+                ]))
             else:
                 clear_conversation(conn, chat_id)
-                tg_send_text(session, token, chat_id, "操作已重置，请重新 /watch。")
+                send_md(session, token, chat_id, f"⚠️ 操作已重置，请重新发送 {md_code('/watch')}。")
             return
         if state == "unwatch_wait_address":
             addr = extract_address(cmd)
             if not addr:
-                tg_send_text(session, token, chat_id, "没识别到地址，请再发一次要删除的地址。")
+                send_md(session, token, chat_id, "❌ 没识别到地址，请再发一次要删除的地址。")
                 return
             remove_watch(conn, chat_id, addr)
             clear_conversation(conn, chat_id)
-            tg_send_text(session, token, chat_id, f"已删除：{addr}")
+            send_md(session, token, chat_id, f"✅ 已删除：{md_code(short_addr(addr))}")
             return
         if state == "batchadd_wait_lines":
             lines = [ln.strip() for ln in cmd.splitlines() if ln.strip()]
             if not lines:
-                tg_send_text(session, token, chat_id, "空输入，已取消。")
+                send_md(session, token, chat_id, "✅ 已取消（空输入）。")
                 clear_conversation(conn, chat_id)
                 return
             tier, limit = get_limits(user_id)
@@ -623,12 +645,12 @@ def handle_command(conn, session, token, msg):
                 add_watch(conn, chat_id, addr, remark)
                 added += 1
             clear_conversation(conn, chat_id)
-            tg_send_text(session, token, chat_id, f"批量添加完成：新增 {added} 个（上限 {limit}）")
+            send_md(session, token, chat_id, f"✅ 批量添加完成：新增 {md_code(added)} 个（上限 {md_code(limit)}）")
             return
         if state == "batchremove_wait_lines":
             lines = [ln.strip() for ln in cmd.splitlines() if ln.strip()]
             if not lines:
-                tg_send_text(session, token, chat_id, "空输入，已取消。")
+                send_md(session, token, chat_id, "✅ 已取消（空输入）。")
                 clear_conversation(conn, chat_id)
                 return
             removed = 0
@@ -639,7 +661,7 @@ def handle_command(conn, session, token, msg):
                 remove_watch(conn, chat_id, addr)
                 removed += 1
             clear_conversation(conn, chat_id)
-            tg_send_text(session, token, chat_id, f"批量删除完成：{removed} 个")
+            send_md(session, token, chat_id, f"✅ 批量删除完成：删除 {md_code(removed)} 个")
             return
         if state == "setevents_wait_choice":
             choice = cmd.strip().lower()
@@ -650,47 +672,67 @@ def handle_command(conn, session, token, msg):
                 "unstake": "unstake",
             }
             if choice not in mapping:
-                tg_send_text(session, token, chat_id, "可选：all / transfer / stake / unstake")
+                send_md(session, token, chat_id, "可选：`all` / `transfer` / `stake` / `unstake`")
                 return
             set_events_setting(conn, chat_id, mapping[choice])
             clear_conversation(conn, chat_id)
-            tg_send_text(session, token, chat_id, f"已设置事件：{mapping[choice]}")
+            name_map = {"all": "全部", "transfer": "转账", "stake": "质押", "unstake": "解押"}
+            send_md(session, token, chat_id, f"✅ 已设置监听事件：{md_bold(name_map.get(mapping[choice], mapping[choice]))}")
             return
 
     if cmd.startswith("/watch"):
         if not is_private:
             pass
         set_conversation(conn, chat_id, "watch_wait_address", {})
-        tg_send_text(session, token, chat_id, "请发送要监听的地址。")
+        send_md(session, token, chat_id, "\n".join([
+            "请发送要监听的地址。",
+            f"发送 {md_code('/cancel')} 可取消。",
+        ]))
         return
 
     if cmd.startswith("/batchadd"):
         set_conversation(conn, chat_id, "batchadd_wait_lines", {})
-        tg_send_text(session, token, chat_id, "请一次发送多行地址（可在地址后面加备注）。发送 /cancel 取消。")
+        send_md(session, token, chat_id, "\n".join([
+            "请一次发送多行地址（可在地址后面加备注）。",
+            "格式示例：",
+            "5xxx...xxx  主钱包",
+            "5yyy...yyy  冷钱包",
+            f"发送 {md_code('/cancel')} 取消。",
+        ]))
         return
 
     if cmd.startswith("/unwatch"):
         set_conversation(conn, chat_id, "unwatch_wait_address", {})
-        tg_send_text(session, token, chat_id, "请发送要删除的地址。")
+        send_md(session, token, chat_id, "\n".join([
+            "请发送要删除的地址。",
+            f"发送 {md_code('/cancel')} 取消。",
+        ]))
         return
 
     if cmd.startswith("/batchremove"):
         set_conversation(conn, chat_id, "batchremove_wait_lines", {})
-        tg_send_text(session, token, chat_id, "请一次发送多行要删除的地址。发送 /cancel 取消。")
+        send_md(session, token, chat_id, "\n".join([
+            "请一次发送多行要删除的地址。",
+            f"发送 {md_code('/cancel')} 取消。",
+        ]))
         return
 
     if cmd.startswith("/remark"):
         parts = cmd.split(None, 2)
         if len(parts) < 3:
-            tg_send_text(session, token, chat_id, "用法：/remark <地址> <新备注>")
+            send_md(session, token, chat_id, f"用法：{md_code('/remark <地址> <新备注>')}")
             return
         addr = extract_address(parts[1])
         remark = parts[2].strip()
         if not addr:
-            tg_send_text(session, token, chat_id, "地址格式不对。")
+            send_md(session, token, chat_id, "❌ 地址格式不对。")
             return
         add_watch(conn, chat_id, addr, remark)
-        tg_send_text(session, token, chat_id, f"已更新备注：{addr}\n备注：{remark}")
+        send_md(session, token, chat_id, "\n".join([
+            "✅ 已更新备注",
+            f"地址：{md_code(short_addr(addr))}",
+            f"备注：{md_code(remark) if remark else '（无）'}",
+        ]))
         return
 
     if cmd.startswith("/list"):
@@ -707,24 +749,29 @@ def handle_command(conn, session, token, msg):
         tier, limit = get_limits(user_id)
         cnt = get_watch_count(conn, chat_id)
         if not rows:
-            tg_send_text(session, token, chat_id, f"监听列表为空（{cnt}/{limit}）。用 /watch 添加。")
+            send_md(session, token, chat_id, f"📭 监听列表为空（{md_code(cnt)}/{md_code(limit)}）。用 {md_code('/watch')} 添加。")
             return
-        lines = [f"📋 监听列表 第{page}页（{cnt}/{limit} {tier}）"]
+        lines = [f"📋 *监听列表* 第{md_code(page)}页（{md_code(cnt)}/{md_code(limit)} {tier}）"]
         for i, (addr, remark, created_at) in enumerate(rows, start=1 + offset):
             ts = datetime.fromtimestamp(int(created_at), tz=timezone.utc).astimezone(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
             if remark:
-                lines.append(f"{i}. {addr}  [{remark}]  {ts}")
+                lines.append(f"{md_code(i)}. {md_code(short_addr(addr))}  {md_code(remark)}")
             else:
-                lines.append(f"{i}. {addr}  {ts}")
-        tg_send_text(session, token, chat_id, "\n".join(lines))
+                lines.append(f"{md_code(i)}. {md_code(short_addr(addr))}")
+        lines.append("")
+        lines.append(f"提示：用 {md_code('/list 2')} 翻页；用 {md_code('/remark <地址> <备注>')} 修改备注。")
+        send_md(session, token, chat_id, "\n".join(lines))
         return
 
     if cmd.startswith("/setevents"):
         set_conversation(conn, chat_id, "setevents_wait_choice", {})
         current = get_events_setting(conn, chat_id)
-        tg_send_text(session, token, chat_id, "\n".join([
-            f"当前事件：{current}",
-            "请选择：all / transfer / stake / unstake",
+        name_map = {"all": "全部", "transfer": "转账", "stake": "质押", "unstake": "解押"}
+        send_md(session, token, chat_id, "\n".join([
+            "⚙️ *设置监听事件*",
+            f"当前：{md_bold(name_map.get(current, current))}",
+            "",
+            "请选择发送：`all` / `transfer` / `stake` / `unstake`",
         ]))
         return
 
@@ -733,23 +780,27 @@ def handle_command(conn, session, token, msg):
         cnt = get_watch_count(conn, chat_id)
         events = get_events_setting(conn, chat_id)
         price_usd = get_tao_price_usd(session)
-        tg_send_text(session, token, chat_id, "\n".join([
-            f"时间：{now_cn_str()}",
-            f"聊天ID：{chat_id}",
-            f"用户ID：{user_id}",
-            f"等级：{tier}",
-            f"地址数：{cnt}/{limit}",
-            f"事件：{events}",
-            f"TAO/USD：{fmt_money(price_usd) if price_usd else 'N/A'}",
+        name_map = {"all": "全部", "transfer": "转账", "stake": "质押", "unstake": "解押"}
+        send_md(session, token, chat_id, "\n".join([
+            "📊 *状态*",
+            f"时间：{md_code(now_cn_str())}",
+            f"等级：{md_code(tier)}",
+            f"地址数：{md_code(cnt)}/{md_code(limit)}",
+            f"事件：{md_bold(name_map.get(events, events))}",
+            f"TAO/USD：{md_code(fmt_money(price_usd) if price_usd else 'N/A')}",
         ]))
         return
 
     if cmd.startswith("/price"):
         usd = get_tao_price_usd(session)
         if usd is None:
-            tg_send_text(session, token, chat_id, "暂时获取不到价格。")
+            send_md(session, token, chat_id, "暂时获取不到价格。")
             return
-        tg_send_text(session, token, chat_id, f"TAO/USD：{fmt_money(usd)}\n时间：{now_cn_str()}")
+        send_md(session, token, chat_id, "\n".join([
+            "💱 *TAO 价格*",
+            f"TAO/USD：{md_code(fmt_money(usd))}",
+            f"时间：{md_code(now_cn_str())}",
+        ]))
         return
 
     if cmd.startswith("/balance"):
@@ -800,14 +851,13 @@ def handle_command(conn, session, token, msg):
         msg_text = build_address_report_markdown(addr, bal["free"], subnet_items, usd)
         if cmd.startswith("/stakes"):
             msg_text = msg_text.replace("💰 *地址信息*", "📊 *子网代币*")
-        tg_send_text(session, token, chat_id, msg_text, parse_mode="Markdown")
+        send_md(session, token, chat_id, msg_text)
         return
 
     if cmd.startswith("/holdall"):
-        page_size = getenv_int("BOT2_PAGE_SIZE", 10)
         rows = list_watches(conn, chat_id, 3001, 0)
         if not rows:
-            tg_send_text(session, token, chat_id, "监听列表为空。用 /watch 添加。")
+            send_md(session, token, chat_id, f"📭 监听列表为空。请先用 {md_code('/watch')} 添加地址。")
             return
         alpha_prices = get_alpha_price_map(session)
         agg = {}
@@ -823,28 +873,34 @@ def handle_command(conn, session, token, msg):
             items.append((netuid, alpha, tao_equiv))
         items.sort(key=lambda x: (x[2] if x[2] is not None else -1.0), reverse=True)
         top = items[:30]
-        lines = ["📌 各子网持有量汇总（当前聊天）", "netuid  alpha  ≈TAO"]
+        lines = ["📌 *各子网持有量汇总*（当前聊天）"]
         for netuid, alpha, tao_equiv in top:
+            try:
+                n = int(netuid)
+            except Exception:
+                continue
             if tao_equiv is None:
-                lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈N/A")
+                lines.append(f"🌠 SN{n}：{fmt_num(alpha, 3)} α（≈N/A）")
             else:
-                lines.append(f"{netuid}: {fmt_money(alpha)} α  ≈{fmt_money(tao_equiv)} TAO")
-        tg_send_text(session, token, chat_id, "\n".join(lines))
+                lines.append(f"🌠 SN{n}：{fmt_num(tao_equiv, 3)} 𝞃（{fmt_num(alpha, 3)} α）")
+        lines.append("")
+        lines.append(f"提示：用 {md_code('/hold <子网ID>')} 看单个子网排行。")
+        send_md(session, token, chat_id, "\n".join(lines))
         return
 
     if cmd.startswith("/hold"):
         parts = cmd.split(None, 1)
         if len(parts) < 2:
-            tg_send_text(session, token, chat_id, "用法：/hold <子网ID>")
+            send_md(session, token, chat_id, f"用法：{md_code('/hold <子网ID>')}")
             return
         try:
             netuid = int(parts[1].strip())
         except Exception:
-            tg_send_text(session, token, chat_id, "子网ID格式不对。")
+            send_md(session, token, chat_id, "❌ 子网ID格式不对。")
             return
         rows = list_watches(conn, chat_id, 3001, 0)
         if not rows:
-            tg_send_text(session, token, chat_id, "监听列表为空。用 /watch 添加。")
+            send_md(session, token, chat_id, f"📭 监听列表为空。请先用 {md_code('/watch')} 添加地址。")
             return
         alpha_prices = get_alpha_price_map(session)
         price = alpha_prices.get(netuid)
@@ -857,14 +913,14 @@ def handle_command(conn, session, token, msg):
             ranking.append((addr, remark, alpha, tao_equiv))
         ranking.sort(key=lambda x: (x[3] if x[3] is not None else x[2]), reverse=True)
         top = ranking[:30]
-        lines = [f"📌 子网 {netuid} 持有量排行（当前聊天）", "地址  alpha  ≈TAO"]
-        for addr, remark, alpha, tao_equiv in top:
-            name = f"{addr}（{remark}）" if remark else addr
+        lines = [f"📌 *SN{netuid} 持有量排行*（当前聊天）"]
+        for idx, (addr, remark, alpha, tao_equiv) in enumerate(top, start=1):
+            name = f"{short_addr(addr)}（{remark}）" if remark else short_addr(addr)
             if tao_equiv is None:
-                lines.append(f"{name}\n  {fmt_money(alpha)} α  ≈N/A")
+                lines.append(f"{md_code(idx)}. {md_code(name)}：{fmt_num(alpha, 3)} α（≈N/A）")
             else:
-                lines.append(f"{name}\n  {fmt_money(alpha)} α  ≈{fmt_money(tao_equiv)} TAO")
-        tg_send_text(session, token, chat_id, "\n".join(lines))
+                lines.append(f"{md_code(idx)}. {md_code(name)}：{fmt_num(tao_equiv, 3)} 𝞃（{fmt_num(alpha, 3)} α）")
+        send_md(session, token, chat_id, "\n".join(lines))
         return
 
     if cmd.startswith("/balances"):
@@ -874,7 +930,7 @@ def handle_command(conn, session, token, msg):
             mode = parts[1].strip().lower()
         rows = list_watches(conn, chat_id, 3001, 0)
         if not rows:
-            tg_send_text(session, token, chat_id, "监听列表为空。用 /watch 添加。")
+            send_md(session, token, chat_id, f"📭 监听列表为空。请先用 {md_code('/watch')} 添加地址。")
             return
         alpha_prices = get_alpha_price_map(session)
         usd = get_tao_price_usd(session)
@@ -898,18 +954,18 @@ def handle_command(conn, session, token, msg):
             total = sum_free
         else:
             total = sum_free + sum_reserved + sum_subnet
-        lines = [
-            "💰 资产汇总（当前聊天）",
-            f"模式：{mode}",
-            f"free：{fmt_money(sum_free)} TAO",
-            f"reserved：{fmt_money(sum_reserved)} TAO",
-        ]
+        mode_map = {"available": "可用余额（free）", "total": "总资产（含子网）", "f": "仅free"}
+        lines = [f"💰 *资产汇总*（当前聊天）", f"模式：{md_bold(mode_map.get(mode, mode))}"]
+        lines.append(f"可用余额 free：{md_code(fmt_num(sum_free, 3))} 𝞃")
+        lines.append(f"锁定/保留 reserved：{md_code(fmt_num(sum_reserved, 3))} 𝞃")
         if mode not in ("available", "f"):
-            lines.append(f"子网合计≈{fmt_money(sum_subnet)} TAO")
-        lines.append(f"总计≈{fmt_money(total)} TAO")
+            lines.append(f"子网合计≈{md_code(fmt_num(sum_subnet, 3))} 𝞃")
+        lines.append(f"总计≈{md_bold(md_code(fmt_num(total, 3)) + ' 𝞃')}")
         if usd:
-            lines.append(f"总计≈{fmt_money(total * usd)} USD")
-        tg_send_text(session, token, chat_id, "\n".join(lines))
+            lines.append(f"总计≈{md_code(fmt_num(total * usd, 2))} USD")
+        lines.append("")
+        lines.append(f"提示：{md_code('/balances available')} / {md_code('/balances total')} / {md_code('/balances f')}")
+        send_md(session, token, chat_id, "\n".join(lines))
         return
 
 def classify_event_type(call_module, call_function):
@@ -1020,38 +1076,40 @@ def start_chain_monitor(conn, session, token):
                     if wanted != "all" and wanted != ev_type:
                         continue
                     tx_hash = exv.get("extrinsic_hash", "")
-                    title = "📌 地址事件通知"
+                    title = "📌 *地址事件通知*"
+                    signer_short = short_addr(signer, 6, 6)
                     lines = [
                         title,
-                        f"时间：{now_cn_str()}",
-                        f"地址：{signer}" + (f"（{remark}）" if remark else ""),
-                        f"事件：{format_event_zh(call_module, call_function)}",
+                        f"⏰ 时间：{md_code(now_cn_str())}",
+                        f"👤 地址：{md_code(signer_short)}" + (f"（{md_code(remark)}）" if remark else ""),
+                        f"🧩 事件：{md_bold(format_event_zh(call_module, call_function))}",
                     ]
                     if ev_type == "transfer":
                         dest = args_dict.get("dest") or args_dict.get("dest_addr") or args_dict.get("to")
                         tao_amt = fmt_tao_from_rao(args_dict.get("value") or args_dict.get("amount") or args_dict.get("balance"))
                         if dest:
-                            lines.append(f"to：{dest}")
+                            lines.append(f"➡️ 目标：{md_code(short_addr(dest, 6, 6))}")
                         if tao_amt is not None:
-                            lines.append(f"金额：{fmt_money(tao_amt)} TAO")
+                            lines.append(f"💰 金额：{md_code(fmt_num(tao_amt, 3))} 𝞃")
                             if tao_usd:
-                                lines.append(f"≈{fmt_money(tao_amt * tao_usd)} USD")
+                                lines.append(f"≈ {md_code(fmt_num(tao_amt * tao_usd, 2))} USD")
                     if ev_type in ("stake", "unstake"):
                         netuid = safe_int(args_dict.get("netuid") or args_dict.get("originNetuid") or args_dict.get("origin_netuid"))
                         raw_alpha = args_dict.get("amountStaked") or args_dict.get("amount_staked") or args_dict.get("amountUnstaked") or args_dict.get("amount_unstaked")
                         alpha_amt = fmt_tao_from_rao(raw_alpha)
                         if netuid is not None:
-                            lines.append(f"子网：{netuid}")
+                            lines.append(f"🌐 子网：{md_bold('SN' + str(netuid))}")
                         if alpha_amt is not None:
-                            lines.append(f"数量：{fmt_money(alpha_amt)} α")
+                            lines.append(f"🪙 数量：{md_code(fmt_num(alpha_amt, 3))} α")
                             if netuid is not None and netuid in alpha_prices:
                                 tao_equiv = alpha_amt * float(alpha_prices[netuid])
-                                lines.append(f"≈{fmt_money(tao_equiv)} TAO")
+                                lines.append(f"≈ {md_code(fmt_num(tao_equiv, 3))} 𝞃")
                                 if tao_usd:
-                                    lines.append(f"≈{fmt_money(tao_equiv * tao_usd)} USD")
+                                    lines.append(f"≈ {md_code(fmt_num(tao_equiv * tao_usd, 2))} USD")
                     if tx_hash:
-                        lines.append(f"哈希：{tx_hash}")
-                    tg_send_text(session, token, chat_id, "\n".join(lines))
+                        lines.append(f"🔗 哈希：{md_code(short_addr(tx_hash, 10, 10))}")
+                        lines.append(f"哈希(全)：{md_code(tx_hash)}")
+                    send_md(session, token, chat_id, "\n".join(lines))
         except Exception:
             return None
         return None
