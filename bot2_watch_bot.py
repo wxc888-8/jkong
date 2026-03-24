@@ -525,7 +525,7 @@ def get_substrate():
     with _substrate_lock:
         if _substrate is not None:
             return _substrate
-        s = SubstrateInterface(url=wss_url)
+        s = SubstrateInterface(url=wss_url, type_registry_preset="default")
         s.init_runtime()
         _substrate = s
         return _substrate
@@ -1487,6 +1487,41 @@ def record_trade_event(conn, block_number, block_ts_ms, extrinsic_index, extrins
             (str(signer), int(netuid), float(alpha_amt), float(price_per_alpha), int(block_ts_ms), int(time.time()))
         )
         return
+    if ev_type == "unstake":
+        raw_alpha = (args_dict or {}).get("amountUnstaked") or (args_dict or {}).get("amount_unstaked")
+        alpha_amt = fmt_tao_from_rao(raw_alpha)
+        if alpha_amt is None:
+            return
+        tao_amt = float(alpha_amt) * float(price_per_alpha)
+        conn.execute(
+            "INSERT OR IGNORE INTO trade_events(block_number, block_ts_ms, extrinsic_index, extrinsic_hash, signer, netuid, side, tao_amount, alpha_amount, price_per_alpha, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (int(block_number), int(block_ts_ms), int(extrinsic_index), str(extrinsic_hash) if extrinsic_hash else None, str(signer), int(netuid), "sell", float(tao_amt), float(alpha_amt), float(price_per_alpha), int(time.time()))
+        )
+        remaining = float(alpha_amt)
+        while remaining > 1e-18:
+            row = conn.execute(
+                "SELECT id, remaining_alpha, cost_price FROM open_lots WHERE address=? AND netuid=? AND remaining_alpha>0 ORDER BY id ASC LIMIT 1",
+                (str(signer), int(netuid))
+            ).fetchone()
+            if not row:
+                break
+            lot_id, lot_remain, lot_cost = int(row[0]), float(row[1]), float(row[2])
+            take = lot_remain if lot_remain <= remaining else remaining
+            cost_tao = take * lot_cost
+            proceeds_tao = take * float(price_per_alpha)
+            pnl = proceeds_tao - cost_tao
+            win = 1 if pnl > 0 else 0
+            conn.execute(
+                "INSERT INTO realized_trades(address, netuid, ts_ms, alpha_amount, cost_tao, proceeds_tao, pnl_tao, win, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (str(signer), int(netuid), int(block_ts_ms), float(take), float(cost_tao), float(proceeds_tao), float(pnl), int(win), int(time.time()))
+            )
+            new_remain = lot_remain - take
+            if new_remain <= 1e-18:
+                conn.execute("DELETE FROM open_lots WHERE id=?", (lot_id,))
+            else:
+                conn.execute("UPDATE open_lots SET remaining_alpha=? WHERE id=?", (float(new_remain), lot_id))
+            remaining -= take
+        return
 
 def parse_days_spec(s):
     if not s:
@@ -1629,7 +1664,7 @@ def start_backfill_trades(days):
     conn = db_connect()
     db_init(conn)
     wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
-    substrate = SubstrateInterface(url=wss_url)
+    substrate = SubstrateInterface(url=wss_url, type_registry_preset="default")
     substrate.init_runtime()
 
     head_hash = substrate.get_block_hash()
@@ -1704,47 +1739,11 @@ def reset_backfill_data(conn):
         except Exception:
             pass
 
-    if ev_type == "unstake":
-        raw_alpha = (args_dict or {}).get("amountUnstaked") or (args_dict or {}).get("amount_unstaked")
-        alpha_amt = fmt_tao_from_rao(raw_alpha)
-        if alpha_amt is None:
-            return
-        tao_amt = float(alpha_amt) * float(price_per_alpha)
-        conn.execute(
-            "INSERT OR IGNORE INTO trade_events(block_number, block_ts_ms, extrinsic_index, extrinsic_hash, signer, netuid, side, tao_amount, alpha_amount, price_per_alpha, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-            (int(block_number), int(block_ts_ms), int(extrinsic_index), str(extrinsic_hash) if extrinsic_hash else None, str(signer), int(netuid), "sell", float(tao_amt), float(alpha_amt), float(price_per_alpha), int(time.time()))
-        )
-        remaining = float(alpha_amt)
-        while remaining > 1e-18:
-            row = conn.execute(
-                "SELECT id, remaining_alpha, cost_price FROM open_lots WHERE address=? AND netuid=? AND remaining_alpha>0 ORDER BY id ASC LIMIT 1",
-                (str(signer), int(netuid))
-            ).fetchone()
-            if not row:
-                break
-            lot_id, lot_remain, lot_cost = int(row[0]), float(row[1]), float(row[2])
-            take = lot_remain if lot_remain <= remaining else remaining
-            cost_tao = take * lot_cost
-            proceeds_tao = take * float(price_per_alpha)
-            pnl = proceeds_tao - cost_tao
-            win = 1 if pnl > 0 else 0
-            conn.execute(
-                "INSERT INTO realized_trades(address, netuid, ts_ms, alpha_amount, cost_tao, proceeds_tao, pnl_tao, win, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (str(signer), int(netuid), int(block_ts_ms), float(take), float(cost_tao), float(proceeds_tao), float(pnl), int(win), int(time.time()))
-            )
-            new_remain = lot_remain - take
-            if new_remain <= 1e-18:
-                conn.execute("DELETE FROM open_lots WHERE id=?", (lot_id,))
-            else:
-                conn.execute("UPDATE open_lots SET remaining_alpha=? WHERE id=?", (float(new_remain), lot_id))
-            remaining -= take
-        return
-
 def start_chain_monitor(session, token):
     conn = db_connect()
     db_init(conn)
     wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
-    substrate = SubstrateInterface(url=wss_url)
+    substrate = SubstrateInterface(url=wss_url, type_registry_preset="default")
     substrate.init_runtime()
 
     def on_block(obj, update_nr, sub_id):
