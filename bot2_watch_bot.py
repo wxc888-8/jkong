@@ -598,7 +598,9 @@ def fmt_num(v, digits=3):
         return str(v)
 
 def sanitize_md_code(s):
-    return str(s or "").replace("`", "'")
+    if s is None:
+        return ""
+    return str(s).replace("`", "'")
 
 def md_code(s):
     return f"`{sanitize_md_code(s)}`"
