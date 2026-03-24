@@ -1183,7 +1183,16 @@ def handle_command(conn, session, token, msg):
         rows = query_topwin(conn, netuid, start_ms, end_ms, 20, min_trades)
         title = f"🏆 *高胜率地址*（{'全网' if netuid is None else 'SN'+str(netuid)} {parts[2]}~{parts[3]}）"
         if not rows:
-            send_md(session, token, chat_id, title + "\n暂无数据（可能回放还没完成，或交易次数不足）。")
+            total_trades, total_addrs = count_realized_trades(conn, netuid, start_ms, end_ms)
+            lines = [
+                title,
+                f"暂无数据（当前筛选：最少成交次数 {md_code(min_trades)}）",
+                f"区间内已统计成交：{md_code(total_trades)} 笔，地址：{md_code(total_addrs)} 个",
+                backfill_progress_line(conn),
+                "",
+                f"建议：把最少成交次数调小，例如 /topwinrange {parts[1]} {parts[2]} {parts[3]} 1",
+            ]
+            send_md(session, token, chat_id, "\n".join(lines))
             return
         lines = [title, f"最少成交次数：{md_code(min_trades)}"]
         for idx, (addr, trades, wins, pnl, cost_sum) in enumerate(rows, start=1):
@@ -1216,7 +1225,16 @@ def handle_command(conn, session, token, msg):
         rows = query_topwin(conn, netuid, start_ms, end_ms, 20, min_trades)
         title = f"🏆 *高胜率地址*（{'全网' if netuid is None else 'SN'+str(netuid)} 最近{days}天）"
         if not rows:
-            send_md(session, token, chat_id, title + "\n暂无数据（可能回放还没完成，或交易次数不足）。")
+            total_trades, total_addrs = count_realized_trades(conn, netuid, start_ms, end_ms)
+            lines = [
+                title,
+                f"暂无数据（当前筛选：最少成交次数 {md_code(min_trades)}）",
+                f"区间内已统计成交：{md_code(total_trades)} 笔，地址：{md_code(total_addrs)} 个",
+                backfill_progress_line(conn),
+                "",
+                f"建议：把最少成交次数调小，例如 /topwin {'all' if netuid is None else str(netuid)} {days}d 1",
+            ]
+            send_md(session, token, chat_id, "\n".join(lines))
             return
         lines = [title, f"最少成交次数：{md_code(min_trades)}"]
         for idx, (addr, trades, wins, pnl, cost_sum) in enumerate(rows, start=1):
@@ -1524,6 +1542,33 @@ def query_addrstat(conn, address, netuid, start_ms, end_ms):
         return {"trades": trades, "wins": wins, "pnl": pnl, "cost": cost_sum, "proceeds": proceeds_sum}
     except Exception:
         return None
+
+def count_realized_trades(conn, netuid, start_ms, end_ms):
+    where = ["ts_ms>=? AND ts_ms<?"]
+    params = [int(start_ms), int(end_ms)]
+    if netuid is not None:
+        where.append("netuid=?")
+        params.append(int(netuid))
+    where_sql = " AND ".join(where)
+    sql = f"SELECT COUNT(1), COUNT(DISTINCT address) FROM realized_trades WHERE {where_sql}"
+    try:
+        row = conn.execute(sql, tuple(params)).fetchone()
+        if not row:
+            return (0, 0)
+        return (int(row[0] or 0), int(row[1] or 0))
+    except Exception:
+        return (0, 0)
+
+def backfill_progress_line(conn):
+    start_bn = kv_get(conn, "backfill_start_bn", "")
+    end_bn = kv_get(conn, "backfill_end_bn", "")
+    cur_bn = kv_get(conn, "backfill_cur_bn", "")
+    done_bn = kv_get(conn, "backfill_done_bn", "")
+    if done_bn and end_bn and done_bn == end_bn:
+        return "回放：已完成"
+    if start_bn and end_bn and cur_bn:
+        return f"回放：{cur_bn}/{end_bn}"
+    return "回放：暂无信息（可能未开启）"
 
 def find_block_by_ts(substrate, head_bn, target_ts_ms):
     lo = 1
