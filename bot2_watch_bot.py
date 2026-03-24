@@ -203,6 +203,10 @@ def tg_set_my_commands(session, bot_token):
         {"command": "hold", "description": "子网持有量排行"},
         {"command": "holdall", "description": "各子网持有量汇总"},
         {"command": "balances", "description": "资产汇总"},
+        {"command": "topwin", "description": "高胜率地址排行"},
+        {"command": "topwinrange", "description": "指定日期胜率排行"},
+        {"command": "addrstat", "description": "地址战绩查询"},
+        {"command": "backfillstatus", "description": "回放进度"},
         {"command": "status", "description": "查看当前状态"},
         {"command": "whoami", "description": "查看我的用户ID"},
         {"command": "contact", "description": "联系管理员"},
@@ -256,6 +260,70 @@ def db_init(conn):
         updated_at INTEGER NOT NULL
     );
     """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS bot2_kv (
+        k TEXT PRIMARY KEY,
+        v TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS trade_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        block_number INTEGER NOT NULL,
+        block_ts_ms INTEGER NOT NULL,
+        extrinsic_index INTEGER NOT NULL,
+        extrinsic_hash TEXT,
+        signer TEXT NOT NULL,
+        netuid INTEGER NOT NULL,
+        side TEXT NOT NULL,
+        tao_amount REAL,
+        alpha_amount REAL,
+        price_per_alpha REAL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(block_number, extrinsic_index)
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS open_lots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        address TEXT NOT NULL,
+        netuid INTEGER NOT NULL,
+        remaining_alpha REAL NOT NULL,
+        cost_price REAL NOT NULL,
+        opened_ts_ms INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    """)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS realized_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        address TEXT NOT NULL,
+        netuid INTEGER NOT NULL,
+        ts_ms INTEGER NOT NULL,
+        alpha_amount REAL NOT NULL,
+        cost_tao REAL NOT NULL,
+        proceeds_tao REAL NOT NULL,
+        pnl_tao REAL NOT NULL,
+        win INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    """)
+
+def kv_get(conn, k, default=None):
+    try:
+        row = conn.execute("SELECT v FROM bot2_kv WHERE k=?", (str(k),)).fetchone()
+        if row and row[0] is not None:
+            return str(row[0])
+    except Exception:
+        return default
+    return default
+
+def kv_set(conn, k, v):
+    conn.execute(
+        "INSERT INTO bot2_kv(k, v, updated_at) VALUES(?, ?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated_at=excluded.updated_at",
+        (str(k), str(v), int(time.time()))
+    )
 
 def get_events_setting(conn, chat_id):
     try:
@@ -365,6 +433,10 @@ def cmd_help():
         "/hold <子网ID> 当前聊天监听地址在该子网持有排行",
         "/holdall 各子网持有量汇总（当前聊天）",
         "/balances [available|total|f] 当前聊天资产汇总",
+        "/topwin [all|子网ID] [30d|7d|all] [min_trades] 高胜率地址排行",
+        "/topwinrange [all|子网ID] <from> <to> [min_trades] 指定日期胜率排行",
+        "/addrstat <地址> [all|子网ID] [30d|7d|all] 地址战绩",
+        "/backfillstatus 查看回放进度",
         "",
         "ℹ️ *其他*",
         "/status 查看当前状态",
@@ -1017,6 +1089,120 @@ def handle_command(conn, session, token, msg):
         send_md(session, token, chat_id, "\n".join(lines))
         return
 
+    if cmd.startswith("/backfillstatus"):
+        start_bn = kv_get(conn, "backfill_start_bn", "")
+        end_bn = kv_get(conn, "backfill_end_bn", "")
+        cur_bn = kv_get(conn, "backfill_cur_bn", "")
+        done_bn = kv_get(conn, "backfill_done_bn", "")
+        lines = ["🧩 *历史回放进度*"]
+        if start_bn and end_bn and cur_bn:
+            lines.append(f"范围：{md_code(start_bn)} → {md_code(end_bn)}")
+            lines.append(f"当前：{md_code(cur_bn)}")
+        if done_bn:
+            lines.append(f"完成：{md_code(done_bn)}")
+        if len(lines) == 1:
+            lines.append("暂无回放信息。")
+        send_md(session, token, chat_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/topwinrange"):
+        parts = cmd.split()
+        if len(parts) < 4:
+            send_md(session, token, chat_id, "用法：/topwinrange <all|子网ID> <from YYYY-MM-DD> <to YYYY-MM-DD> [min_trades]")
+            return
+        netuid = parse_netuid_spec(parts[1])
+        dt_from = parse_date_ymd(parts[2])
+        dt_to = parse_date_ymd(parts[3])
+        if not dt_from or not dt_to:
+            send_md(session, token, chat_id, "日期格式不对，请用 YYYY-MM-DD。")
+            return
+        start_ms = int(dt_from.astimezone(timezone.utc).timestamp() * 1000)
+        end_ms = int((dt_to + timedelta(days=1)).astimezone(timezone.utc).timestamp() * 1000)
+        min_trades = 5
+        if len(parts) >= 5:
+            try:
+                min_trades = max(1, int(parts[4]))
+            except Exception:
+                min_trades = 5
+        rows = query_topwin(conn, netuid, start_ms, end_ms, 20, min_trades)
+        title = f"🏆 *高胜率地址*（{'全网' if netuid is None else 'SN'+str(netuid)} {parts[2]}~{parts[3]}）"
+        if not rows:
+            send_md(session, token, chat_id, title + "\n暂无数据（可能回放还没完成，或交易次数不足）。")
+            return
+        lines = [title, f"最少成交次数：{md_code(min_trades)}"]
+        for idx, (addr, trades, wins, pnl, cost_sum) in enumerate(rows, start=1):
+            try:
+                winrate = float(wins or 0) / float(trades or 1)
+            except Exception:
+                winrate = 0.0
+            roi = (float(pnl) / float(cost_sum)) if (cost_sum and float(cost_sum) != 0) else 0.0
+            lines.append(f"{md_code(idx)}. {md_code(short_addr(addr, 4, 4))}  胜率 {fmt_num(winrate*100, 1)}%  次数 {md_code(trades)}  ROI {fmt_num(roi*100, 1)}%")
+        send_md(session, token, chat_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/topwin"):
+        parts = cmd.split()
+        netuid = None
+        days = 30
+        min_trades = 5
+        if len(parts) >= 2:
+            netuid = parse_netuid_spec(parts[1])
+        if len(parts) >= 3:
+            d = parse_days_spec(parts[2])
+            days = d if d is not None else 30
+        if len(parts) >= 4:
+            try:
+                min_trades = max(1, int(parts[3]))
+            except Exception:
+                min_trades = 5
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - int(days) * 86400 * 1000 if days is not None else 0
+        rows = query_topwin(conn, netuid, start_ms, end_ms, 20, min_trades)
+        title = f"🏆 *高胜率地址*（{'全网' if netuid is None else 'SN'+str(netuid)} 最近{days}天）"
+        if not rows:
+            send_md(session, token, chat_id, title + "\n暂无数据（可能回放还没完成，或交易次数不足）。")
+            return
+        lines = [title, f"最少成交次数：{md_code(min_trades)}"]
+        for idx, (addr, trades, wins, pnl, cost_sum) in enumerate(rows, start=1):
+            try:
+                winrate = float(wins or 0) / float(trades or 1)
+            except Exception:
+                winrate = 0.0
+            roi = (float(pnl) / float(cost_sum)) if (cost_sum and float(cost_sum) != 0) else 0.0
+            lines.append(f"{md_code(idx)}. {md_code(short_addr(addr, 4, 4))}  胜率 {fmt_num(winrate*100, 1)}%  次数 {md_code(trades)}  ROI {fmt_num(roi*100, 1)}%")
+        send_md(session, token, chat_id, "\n".join(lines))
+        return
+
+    if cmd.startswith("/addrstat"):
+        parts = cmd.split()
+        if len(parts) < 2:
+            send_md(session, token, chat_id, "用法：/addrstat <地址> [all|子网ID] [30d|7d|all]")
+            return
+        addr = extract_address(parts[1]) or parts[1].strip()
+        netuid = parse_netuid_spec(parts[2]) if len(parts) >= 3 else None
+        days = parse_days_spec(parts[3]) if len(parts) >= 4 else 30
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - int(days) * 86400 * 1000 if days is not None else 0
+        stat = query_addrstat(conn, addr, netuid, start_ms, end_ms)
+        title = f"📈 *地址战绩*（{'全网' if netuid is None else 'SN'+str(netuid)} 最近{days}天）"
+        if not stat or stat.get("trades", 0) == 0:
+            send_md(session, token, chat_id, title + "\n暂无数据（可能回放还没完成，或该地址没有成交）。")
+            return
+        trades = int(stat["trades"])
+        wins = int(stat["wins"])
+        winrate = float(wins) / float(trades or 1)
+        pnl = float(stat["pnl"])
+        cost = float(stat["cost"])
+        roi = (pnl / cost) if cost != 0 else 0.0
+        lines = [
+            title,
+            f"地址：{md_code(addr)}",
+            f"成交：{md_code(trades)}  胜率：{fmt_num(winrate*100, 1)}%",
+            f"PnL：{md_code(fmt_num(pnl, 3))} 𝞃  ROI：{fmt_num(roi*100, 1)}%",
+        ]
+        send_md(session, token, chat_id, "\n".join(lines))
+        return
+
 def classify_event_type(call_module, call_function):
     m = (call_module or "").lower()
     f = (call_function or "").lower()
@@ -1150,7 +1336,264 @@ def fmt_tao_from_rao(v):
         return None
     return tao_from_rao(i)
 
-def start_chain_monitor(conn, session, token):
+def price_from_bits(bits_value):
+    try:
+        b = int(bits_value)
+    except Exception:
+        return None
+    if b < 0:
+        return None
+    return float(b) / 4294967296.0
+
+def get_block_timestamp_ms(substrate, block_hash):
+    try:
+        v = substrate.query("Timestamp", "Now", [], block_hash=block_hash).value
+        return int(v) if v is not None else None
+    except Exception:
+        return None
+
+def get_price_per_alpha(substrate, block_hash, netuid):
+    try:
+        v = substrate.query("SubtensorModule", "SubnetMovingPrice", [int(netuid)], block_hash=block_hash).value
+        bits = v.get("bits") if isinstance(v, dict) else None
+        return price_from_bits(bits)
+    except Exception:
+        return None
+
+def record_trade_event(conn, block_number, block_ts_ms, extrinsic_index, extrinsic_hash, signer, netuid, ev_type, args_dict, price_per_alpha):
+    if block_ts_ms is None or price_per_alpha is None or price_per_alpha <= 0:
+        return
+    if ev_type == "stake":
+        raw_tao = (args_dict or {}).get("amountStaked") or (args_dict or {}).get("amount_staked")
+        tao_amt = fmt_tao_from_rao(raw_tao)
+        if tao_amt is None:
+            return
+        alpha_amt = float(tao_amt) / float(price_per_alpha)
+        conn.execute(
+            "INSERT OR IGNORE INTO trade_events(block_number, block_ts_ms, extrinsic_index, extrinsic_hash, signer, netuid, side, tao_amount, alpha_amount, price_per_alpha, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (int(block_number), int(block_ts_ms), int(extrinsic_index), str(extrinsic_hash) if extrinsic_hash else None, str(signer), int(netuid), "buy", float(tao_amt), float(alpha_amt), float(price_per_alpha), int(time.time()))
+        )
+        conn.execute(
+            "INSERT INTO open_lots(address, netuid, remaining_alpha, cost_price, opened_ts_ms, created_at) VALUES(?,?,?,?,?,?)",
+            (str(signer), int(netuid), float(alpha_amt), float(price_per_alpha), int(block_ts_ms), int(time.time()))
+        )
+        return
+
+def parse_days_spec(s):
+    if not s:
+        return None
+    t = str(s).strip().lower()
+    if t == "all":
+        return None
+    if t.endswith("d"):
+        try:
+            return max(1, int(t[:-1]))
+        except Exception:
+            return None
+    try:
+        return max(1, int(t))
+    except Exception:
+        return None
+
+def parse_netuid_spec(s):
+    if not s:
+        return None
+    t = str(s).strip().lower()
+    if t in ("all", "*"):
+        return None
+    try:
+        return int(t)
+    except Exception:
+        return None
+
+def parse_date_ymd(s):
+    try:
+        dt = datetime.strptime(str(s).strip(), "%Y-%m-%d")
+        return dt.replace(tzinfo=CN_TZ)
+    except Exception:
+        return None
+
+def query_topwin(conn, netuid, start_ms, end_ms, limit, min_trades):
+    where = ["ts_ms>=? AND ts_ms<?"]
+    params = [int(start_ms), int(end_ms)]
+    if netuid is not None:
+        where.append("netuid=?")
+        params.append(int(netuid))
+    where_sql = " AND ".join(where)
+    sql = f"""
+    SELECT address,
+           COUNT(1) AS trades,
+           SUM(win) AS wins,
+           SUM(pnl_tao) AS pnl,
+           SUM(cost_tao) AS cost_sum
+    FROM realized_trades
+    WHERE {where_sql}
+    GROUP BY address
+    HAVING trades >= ?
+    ORDER BY (CAST(wins AS REAL)/trades) DESC, trades DESC, pnl DESC
+    LIMIT ?
+    """
+    params2 = params + [int(min_trades), int(limit)]
+    try:
+        rows = conn.execute(sql, tuple(params2)).fetchall()
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+def query_addrstat(conn, address, netuid, start_ms, end_ms):
+    where = ["ts_ms>=? AND ts_ms<? AND address=?"]
+    params = [int(start_ms), int(end_ms), str(address)]
+    if netuid is not None:
+        where.append("netuid=?")
+        params.append(int(netuid))
+    where_sql = " AND ".join(where)
+    sql = f"""
+    SELECT COUNT(1) AS trades,
+           SUM(win) AS wins,
+           SUM(pnl_tao) AS pnl,
+           SUM(cost_tao) AS cost_sum,
+           SUM(proceeds_tao) AS proceeds_sum
+    FROM realized_trades
+    WHERE {where_sql}
+    """
+    try:
+        row = conn.execute(sql, tuple(params)).fetchone()
+        if not row:
+            return None
+        trades = int(row[0] or 0)
+        wins = int(row[1] or 0)
+        pnl = float(row[2] or 0.0)
+        cost_sum = float(row[3] or 0.0)
+        proceeds_sum = float(row[4] or 0.0)
+        return {"trades": trades, "wins": wins, "pnl": pnl, "cost": cost_sum, "proceeds": proceeds_sum}
+    except Exception:
+        return None
+
+def find_block_by_ts(substrate, head_bn, target_ts_ms):
+    lo = 1
+    hi = int(head_bn)
+    best = hi
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        try:
+            h = substrate.get_block_hash(mid)
+        except Exception:
+            break
+        ts = get_block_timestamp_ms(substrate, h)
+        if ts is None:
+            break
+        if ts >= target_ts_ms:
+            best = mid
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    return best
+
+def start_backfill_trades(days):
+    conn = db_connect()
+    db_init(conn)
+    wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
+    substrate = SubstrateInterface(url=wss_url)
+    substrate.init_runtime()
+
+    head_hash = substrate.get_block_hash()
+    head_bn = substrate.get_block_number(head_hash)
+    now_ms = get_block_timestamp_ms(substrate, head_hash) or int(time.time() * 1000)
+    start_ts = now_ms - int(days) * 86400 * 1000
+    start_bn = find_block_by_ts(substrate, head_bn, start_ts)
+    kv_set(conn, "backfill_start_bn", str(start_bn))
+    kv_set(conn, "backfill_end_bn", str(head_bn))
+    cur = kv_get(conn, "backfill_cur_bn", None)
+    try:
+        cur_bn = int(cur) if cur is not None else int(start_bn)
+    except Exception:
+        cur_bn = int(start_bn)
+    if cur_bn < start_bn:
+        cur_bn = int(start_bn)
+    sleep_ms = getenv_int("BOT2_BACKFILL_SLEEP_MS", 5)
+    for bn in range(cur_bn, int(head_bn) + 1):
+        kv_set(conn, "backfill_cur_bn", str(bn))
+        try:
+            h = substrate.get_block_hash(bn)
+            ts_ms = get_block_timestamp_ms(substrate, h)
+            block = substrate.get_block(block_hash=h)
+            extrinsics = block.get("extrinsics", [])
+            for ex_idx, ex in enumerate(extrinsics):
+                try:
+                    exv = ex.value
+                except Exception:
+                    continue
+                signer = exv.get("address")
+                if not signer:
+                    continue
+                call = exv.get("call", {})
+                if not isinstance(call, dict):
+                    continue
+                call_module = call.get("call_module")
+                call_function = call.get("call_function")
+                args_dict = call_args_list_to_dict(call.get("call_args", []))
+                ev_type = classify_event_type(call_module, call_function)
+                netuid = get_netuid_from_args(args_dict)
+                if ev_type not in ("stake", "unstake") or netuid is None:
+                    continue
+                price_per_alpha = get_price_per_alpha(substrate, h, netuid)
+                record_trade_event(
+                    conn,
+                    bn,
+                    ts_ms,
+                    ex_idx,
+                    exv.get("extrinsic_hash", ""),
+                    signer,
+                    netuid,
+                    ev_type,
+                    args_dict,
+                    price_per_alpha,
+                )
+        except Exception:
+            pass
+        if sleep_ms > 0:
+            time.sleep(float(sleep_ms) / 1000.0)
+    kv_set(conn, "backfill_done_bn", str(head_bn))
+
+    if ev_type == "unstake":
+        raw_alpha = (args_dict or {}).get("amountUnstaked") or (args_dict or {}).get("amount_unstaked")
+        alpha_amt = fmt_tao_from_rao(raw_alpha)
+        if alpha_amt is None:
+            return
+        tao_amt = float(alpha_amt) * float(price_per_alpha)
+        conn.execute(
+            "INSERT OR IGNORE INTO trade_events(block_number, block_ts_ms, extrinsic_index, extrinsic_hash, signer, netuid, side, tao_amount, alpha_amount, price_per_alpha, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (int(block_number), int(block_ts_ms), int(extrinsic_index), str(extrinsic_hash) if extrinsic_hash else None, str(signer), int(netuid), "sell", float(tao_amt), float(alpha_amt), float(price_per_alpha), int(time.time()))
+        )
+        remaining = float(alpha_amt)
+        while remaining > 1e-18:
+            row = conn.execute(
+                "SELECT id, remaining_alpha, cost_price FROM open_lots WHERE address=? AND netuid=? AND remaining_alpha>0 ORDER BY id ASC LIMIT 1",
+                (str(signer), int(netuid))
+            ).fetchone()
+            if not row:
+                break
+            lot_id, lot_remain, lot_cost = int(row[0]), float(row[1]), float(row[2])
+            take = lot_remain if lot_remain <= remaining else remaining
+            cost_tao = take * lot_cost
+            proceeds_tao = take * float(price_per_alpha)
+            pnl = proceeds_tao - cost_tao
+            win = 1 if pnl > 0 else 0
+            conn.execute(
+                "INSERT INTO realized_trades(address, netuid, ts_ms, alpha_amount, cost_tao, proceeds_tao, pnl_tao, win, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (str(signer), int(netuid), int(block_ts_ms), float(take), float(cost_tao), float(proceeds_tao), float(pnl), int(win), int(time.time()))
+            )
+            new_remain = lot_remain - take
+            if new_remain <= 1e-18:
+                conn.execute("DELETE FROM open_lots WHERE id=?", (lot_id,))
+            else:
+                conn.execute("UPDATE open_lots SET remaining_alpha=? WHERE id=?", (float(new_remain), lot_id))
+            remaining -= take
+        return
+
+def start_chain_monitor(session, token):
+    conn = db_connect()
+    db_init(conn)
     wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
     substrate = SubstrateInterface(url=wss_url)
     substrate.init_runtime()
@@ -1163,8 +1606,9 @@ def start_chain_monitor(conn, session, token):
                 return None
             block_hash = substrate.get_block_hash(block_number)
             block = substrate.get_block(block_hash=block_hash)
+            block_ts_ms = get_block_timestamp_ms(substrate, block_hash)
             extrinsics = block.get("extrinsics", [])
-            for ex in extrinsics:
+            for ex_idx, ex in enumerate(extrinsics):
                 try:
                     exv = ex.value
                 except Exception:
@@ -1180,6 +1624,21 @@ def start_chain_monitor(conn, session, token):
                 call_args = call.get("call_args", [])
                 args_dict = call_args_list_to_dict(call_args)
                 ev_type = classify_event_type(call_module, call_function)
+                netuid = get_netuid_from_args(args_dict)
+                if ev_type in ("stake", "unstake") and netuid is not None:
+                    price_per_alpha = get_price_per_alpha(substrate, block_hash, netuid)
+                    record_trade_event(
+                        conn,
+                        block_number,
+                        block_ts_ms,
+                        ex_idx,
+                        exv.get("extrinsic_hash", ""),
+                        signer,
+                        netuid,
+                        ev_type,
+                        args_dict,
+                        price_per_alpha,
+                    )
 
                 watchers = find_watches_by_address(conn, signer)
                 if not watchers:
@@ -1280,7 +1739,12 @@ def main():
     conn = db_connect()
     db_init(conn)
 
-    t = threading.Thread(target=start_chain_monitor, args=(conn, session, token), daemon=True)
+    backfill_days = getenv_int("BOT2_BACKFILL_DAYS", 30)
+    if backfill_days and backfill_days > 0:
+        t_backfill = threading.Thread(target=start_backfill_trades, args=(int(backfill_days),), daemon=True)
+        t_backfill.start()
+
+    t = threading.Thread(target=start_chain_monitor, args=(session, token), daemon=True)
     t.start()
 
     offset = 0
