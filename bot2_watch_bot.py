@@ -525,7 +525,7 @@ def get_substrate():
     with _substrate_lock:
         if _substrate is not None:
             return _substrate
-        s = SubstrateInterface(url=wss_url, type_registry_preset="default")
+        s = SubstrateInterface(url=wss_url, use_remote_preset=True, auto_discover=True)
         s.init_runtime()
         _substrate = s
         return _substrate
@@ -1664,7 +1664,7 @@ def start_backfill_trades(days):
     conn = db_connect()
     db_init(conn)
     wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
-    substrate = SubstrateInterface(url=wss_url, type_registry_preset="default")
+    substrate = SubstrateInterface(url=wss_url, use_remote_preset=True, auto_discover=True)
     substrate.init_runtime()
 
     head_hash = substrate.get_block_hash()
@@ -1743,7 +1743,7 @@ def start_chain_monitor(session, token):
     conn = db_connect()
     db_init(conn)
     wss_url = getenv_str("BOT2_SUBSTRATE_WSS_URL", getenv_str("SUBSTRATE_WSS_URL", "wss://entrypoint-finney.opentensor.ai:443"))
-    substrate = SubstrateInterface(url=wss_url, type_registry_preset="default")
+    substrate = SubstrateInterface(url=wss_url, use_remote_preset=True, auto_discover=True)
     substrate.init_runtime()
 
     def on_block(obj, update_nr, sub_id):
