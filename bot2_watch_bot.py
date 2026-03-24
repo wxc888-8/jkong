@@ -148,7 +148,7 @@ def get_session():
     })
     return session
 
-def tg_send_text(session, bot_token, chat_id, text, parse_mode=None):
+def tg_send_text(session, bot_token, chat_id, text, parse_mode=None, reply_markup=None):
     if not bot_token or chat_id is None:
         return False
     safe_text = "" if text is None else str(text)
@@ -162,6 +162,8 @@ def tg_send_text(session, bot_token, chat_id, text, parse_mode=None):
     }
     if parse_mode:
         payload["parse_mode"] = str(parse_mode)
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         resp = session.post(url, json=payload, timeout=20)
         return resp.status_code == 200
@@ -190,6 +192,8 @@ def tg_set_my_commands(session, bot_token):
     url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
     commands = [
         {"command": "help", "description": "菜单/帮助"},
+        {"command": "menu", "description": "打开按钮菜单"},
+        {"command": "hidemenu", "description": "关闭按钮菜单"},
         {"command": "watch", "description": "添加监听地址"},
         {"command": "batchadd", "description": "批量添加地址"},
         {"command": "unwatch", "description": "删除监听地址"},
@@ -412,9 +416,9 @@ def get_limits(user_id):
 
 def cmd_help():
     return "\n".join([
-        "🤖 *Bittensor 地址监控机器人*",
+        "*Bittensor 地址监控机器人*",
         "",
-        "📋 *地址管理*",
+        "*地址管理*",
         "/watch 添加监听地址（交互式）",
         "/batchadd 批量添加地址（多行，地址后可带备注）",
         "/unwatch 删除监听地址（交互式）",
@@ -422,10 +426,10 @@ def cmd_help():
         "/remark <地址> <新备注> 更新备注",
         "/list [页码] 查看监听列表（默认第1页）",
         "",
-        "⚙️ *监听设置*",
+        "*监听设置*",
         "/setevents 设置监听事件类型（all/transfer/stake/unstake）",
         "",
-        "🔍 *查询/统计*",
+        "*查询/统计*",
         "/price 查看 TAO/USD 价格",
         "/balance 余额查询（可回复包含地址的消息）",
         "/query <地址> 地址信息（余额 + 子网代币）",
@@ -438,14 +442,16 @@ def cmd_help():
         "/addrstat <地址> [all|子网ID] [30d|7d|all] 地址战绩",
         "/backfillstatus 查看回放进度",
         "",
-        "ℹ️ *其他*",
+        "*其他*",
         "/status 查看当前状态",
         "/contact 联系管理员",
         "/cancel 取消当前操作",
         "/whoami 获取你的用户ID",
         "/help 显示本帮助",
+        "/menu 打开按钮菜单",
+        "/hidemenu 关闭按钮菜单",
         "",
-        "💡 *提示*",
+        "*提示*",
         "统计命令（/hold /holdall /balances）基于“当前聊天”的监听列表，请先用 /watch 添加地址。",
         "管理员/会员在服务器 .env 配置：BOT2_TG_ADMIN_USER_IDS / BOT2_TG_MEMBER_USER_IDS",
     ])
@@ -600,8 +606,27 @@ def md_code(s):
 def md_bold(s):
     return f"*{str(s or '')}*"
 
-def send_md(session, token, chat_id, text):
-    return tg_send_text(session, token, chat_id, text, parse_mode="Markdown")
+def send_md(session, token, chat_id, text, reply_markup=None):
+    return tg_send_text(session, token, chat_id, text, parse_mode="Markdown", reply_markup=reply_markup)
+
+def get_reply_menu_markup():
+    keyboard = [
+        ["添加监听", "删除监听", "监听列表"],
+        ["设置事件", "价格", "余额查询"],
+        ["地址查询", "子网排行", "资产汇总"],
+        ["高胜率排行", "指定日期排行", "地址战绩"],
+        ["回放进度", "我的ID", "联系管理员"],
+        ["取消", "帮助", "关闭菜单"],
+    ]
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+        "selective": False,
+    }
+
+def get_hide_menu_markup():
+    return {"remove_keyboard": True}
 
 def short_addr(addr, head=4, tail=4):
     s = str(addr or "")
@@ -668,12 +693,43 @@ def handle_command(conn, session, token, msg):
     is_private = (chat_type == "private")
     cmd = (text or "").strip() if isinstance(text, str) else ""
 
+    btn_map = {
+        "添加监听": "/watch",
+        "删除监听": "/unwatch",
+        "监听列表": "/list",
+        "设置事件": "/setevents",
+        "价格": "/price",
+        "余额查询": "/balance",
+        "地址查询": "/query",
+        "子网排行": "/hold",
+        "资产汇总": "/balances",
+        "高胜率排行": "/topwin",
+        "指定日期排行": "/topwinrange",
+        "地址战绩": "/addrstat",
+        "回放进度": "/backfillstatus",
+        "我的ID": "/whoami",
+        "联系管理员": "/contact",
+        "取消": "/cancel",
+        "帮助": "/help",
+        "关闭菜单": "/hidemenu",
+    }
+    if cmd in btn_map:
+        cmd = btn_map[cmd]
+
     if cmd.startswith("/start"):
-        send_md(session, token, chat_id, cmd_help())
+        send_md(session, token, chat_id, cmd_help(), reply_markup=get_reply_menu_markup())
+        return
+
+    if cmd.startswith("/menu"):
+        send_md(session, token, chat_id, "菜单已打开。", reply_markup=get_reply_menu_markup())
+        return
+
+    if cmd.startswith("/hidemenu"):
+        send_md(session, token, chat_id, "菜单已关闭。", reply_markup=get_hide_menu_markup())
         return
 
     if cmd.startswith("/help"):
-        send_md(session, token, chat_id, cmd_help())
+        send_md(session, token, chat_id, cmd_help(), reply_markup=get_reply_menu_markup())
         return
 
     if cmd.startswith("/whoami"):
