@@ -211,6 +211,8 @@ def tg_set_my_commands(session, bot_token):
         {"command": "topwinrange", "description": "指定日期胜率排行"},
         {"command": "addrstat", "description": "地址战绩查询"},
         {"command": "backfillstatus", "description": "回放进度"},
+        {"command": "backfillrun", "description": "开始回放（管理员）"},
+        {"command": "backfillreset", "description": "清空回放数据（管理员）"},
         {"command": "status", "description": "查看当前状态"},
         {"command": "whoami", "description": "查看我的用户ID"},
         {"command": "contact", "description": "联系管理员"},
@@ -413,6 +415,13 @@ def get_limits(user_id):
     if int(user_id) in members:
         return ("member", 3000)
     return ("free", 3)
+
+def is_admin_user(user_id):
+    admins = parse_int_set(getenv_str("BOT2_TG_ADMIN_USER_IDS", ""))
+    try:
+        return int(user_id) in admins
+    except Exception:
+        return False
 
 def cmd_help():
     return "\n".join([
@@ -1163,6 +1172,30 @@ def handle_command(conn, session, token, msg):
         send_md(session, token, chat_id, "\n".join(lines))
         return
 
+    if cmd.startswith("/backfillreset"):
+        if not is_admin_user(user_id):
+            send_md(session, token, chat_id, "权限不足：仅管理员可执行。")
+            return
+        reset_backfill_data(conn)
+        send_md(session, token, chat_id, "已清空回放与统计数据（监听列表不受影响）。可用 /backfillrun 重新回放。")
+        return
+
+    if cmd.startswith("/backfillrun"):
+        if not is_admin_user(user_id):
+            send_md(session, token, chat_id, "权限不足：仅管理员可执行。")
+            return
+        parts = cmd.split()
+        days = getenv_int("BOT2_BACKFILL_DAYS", 30)
+        if len(parts) >= 2:
+            try:
+                days = max(1, int(parts[1]))
+            except Exception:
+                days = getenv_int("BOT2_BACKFILL_DAYS", 30)
+        t_backfill = threading.Thread(target=start_backfill_trades, args=(int(days),), daemon=True)
+        t_backfill.start()
+        send_md(session, token, chat_id, f"已开始回放最近 {md_code(days)} 天数据。用 /backfillstatus 查看进度。")
+        return
+
     if cmd.startswith("/topwinrange"):
         parts = cmd.split()
         if len(parts) < 4:
@@ -1657,6 +1690,19 @@ def start_backfill_trades(days):
         if sleep_ms > 0:
             time.sleep(float(sleep_ms) / 1000.0)
     kv_set(conn, "backfill_done_bn", str(head_bn))
+
+def reset_backfill_data(conn):
+    try:
+        conn.execute("DELETE FROM trade_events;")
+        conn.execute("DELETE FROM open_lots;")
+        conn.execute("DELETE FROM realized_trades;")
+    except Exception:
+        pass
+    for k in ("backfill_start_bn", "backfill_end_bn", "backfill_cur_bn", "backfill_done_bn"):
+        try:
+            conn.execute("DELETE FROM bot2_kv WHERE k=?", (k,))
+        except Exception:
+            pass
 
     if ev_type == "unstake":
         raw_alpha = (args_dict or {}).get("amountUnstaked") or (args_dict or {}).get("amount_unstaked")
